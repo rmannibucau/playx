@@ -41,8 +41,6 @@ import javax.servlet.http.HttpSession;
 import javax.servlet.http.HttpUpgradeHandler;
 import javax.servlet.http.Part;
 
-import org.apache.tomcat.util.http.FastHttpDateFormat;
-
 import play.api.libs.typedmap.TypedKey;
 import play.api.libs.typedmap.TypedMap;
 import play.api.mvc.Request;
@@ -57,7 +55,7 @@ public class RequestAdapter implements HttpServletRequest {
 
     private static final TimeZone GMT_ZONE = TimeZone.getTimeZone("GMT");
 
-    private static final DateFormat DATE_FORMATS[] = { new SimpleDateFormat(FastHttpDateFormat.RFC1123_DATE, Locale.US),
+    private static final DateFormat DATE_FORMATS[] = { new SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss zzz", Locale.US),
             new SimpleDateFormat("EEEEEE, dd-MMM-yy HH:mm:ss zzz", Locale.US),
             new SimpleDateFormat("EEE MMMM d HH:mm:ss yyyy", Locale.US) };
 
