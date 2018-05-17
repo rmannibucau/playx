@@ -1,20 +1,21 @@
-package com.github.rmannibucau.playservletbridge.servlet;
+package com.github.rmannibucau.playx.servlet.servlet.internal;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.io.UnsupportedEncodingException;
+import java.io.InputStream;
 
 import javax.servlet.ReadListener;
 import javax.servlet.ServletInputStream;
 
-public class InputStreamAdapter extends ServletInputStream {
+class InputStreamAdapter extends ServletInputStream {
 
-    private final ByteArrayInputStream buffer;
+    private final InputStream buffer;
 
     private ReadListener listener;
 
-    public InputStreamAdapter(final String buffer, final String encoding) throws UnsupportedEncodingException {
-        this.buffer = new ByteArrayInputStream(buffer.getBytes(encoding));
+    private boolean done;
+
+    InputStreamAdapter(final InputStream buffer) {
+        this.buffer = buffer;
     }
 
     @Override
@@ -30,7 +31,7 @@ public class InputStreamAdapter extends ServletInputStream {
     @Override
     public void setReadListener(final ReadListener listener) {
         this.listener = listener;
-        if (buffer.available() > 0) {
+        if (!done) {
             try {
                 listener.onDataAvailable();
             } catch (final IOException e) {
@@ -44,11 +45,13 @@ public class InputStreamAdapter extends ServletInputStream {
         try {
             final int read = buffer.read();
             if (read < 0) {
+                done = true;
                 listener.onAllDataRead();
             }
             return read;
         } catch (final Throwable ioe) {
             if (listener != null) {
+                done = true;
                 listener.onError(ioe);
             }
             throw ioe;

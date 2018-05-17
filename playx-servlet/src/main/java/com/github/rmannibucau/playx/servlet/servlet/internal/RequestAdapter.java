@@ -1,6 +1,5 @@
-package com.github.rmannibucau.playservletbridge.servlet;
+package com.github.rmannibucau.playx.servlet.servlet.internal;
 
-import static java.util.Collections.emptyEnumeration;
 import static java.util.Collections.emptyList;
 import static java.util.Collections.enumeration;
 import static java.util.Optional.ofNullable;
@@ -9,9 +8,9 @@ import static java.util.stream.Collectors.toSet;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.io.UnsupportedEncodingException;
-import java.nio.charset.StandardCharsets;
+import java.net.URLDecoder;
 import java.security.Principal;
 import java.text.DateFormat;
 import java.text.ParseException;
@@ -19,12 +18,14 @@ import java.text.SimpleDateFormat;
 import java.util.AbstractMap;
 import java.util.Collection;
 import java.util.Enumeration;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
+import java.util.StringTokenizer;
 import java.util.TimeZone;
 import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 import javax.servlet.AsyncContext;
 import javax.servlet.DispatcherType;
@@ -41,15 +42,10 @@ import javax.servlet.http.HttpSession;
 import javax.servlet.http.HttpUpgradeHandler;
 import javax.servlet.http.Part;
 
-import play.api.libs.typedmap.TypedKey;
-import play.api.libs.typedmap.TypedMap;
-import play.api.mvc.Request;
+import play.api.inject.Injector;
+import play.i18n.Lang;
+import play.libs.typedmap.TypedKey;
 import play.mvc.Http;
-import scala.Option;
-import scala.collection.JavaConverters;
-import scala.collection.MapLike;
-import scala.collection.Seq;
-import scala.compat.java8.OptionConverters;
 
 public class RequestAdapter implements HttpServletRequest {
 
@@ -59,25 +55,46 @@ public class RequestAdapter implements HttpServletRequest {
             new SimpleDateFormat("EEEEEE, dd-MMM-yy HH:mm:ss zzz", Locale.US),
             new SimpleDateFormat("EEE MMMM d HH:mm:ss yyyy", Locale.US) };
 
-    private static final ServletContext SERVLET_CONTEXT = new PlayServletContext();
-
     static {
         Stream.of(DATE_FORMATS).forEach(f -> f.setTimeZone(GMT_ZONE));
     }
 
-    private final Request<Http.RequestBody> playDelegate;
+    private final Http.RequestHeader playDelegate;
+
+    private final InputStream entity;
+
+    private final ServletResponse response;
+
+    private final Injector injector;
+
+    private final ServletContext context;
+
+    private final DynamicServlet servlet;
 
     private ServletInputStream inputStream;
 
     private BufferedReader reader;
 
-    public RequestAdapter(final Request<Http.RequestBody> request) {
+    private final Map<String, Object> attributes = new HashMap<>();
+
+    private boolean asyncStarted;
+
+    private Map<String, String> params;
+
+    public RequestAdapter(final Http.RequestHeader request, final InputStream entity, final ServletResponse response,
+            final Injector injector, final ServletContext context, final DynamicServlet servlet) {
+        this.context = context;
         this.playDelegate = request;
+        this.entity = entity;
+        this.response = response;
+        this.injector = injector;
+        this.servlet = servlet;
+        parseParams();
     }
 
     @Override
     public Cookie[] getCookies() {
-        return JavaConverters.asJavaCollection(playDelegate.cookies().toSeq()).stream().map(c -> new Cookie(c.name(), c.value()))
+        return StreamSupport.stream(playDelegate.cookies().spliterator(), false).map(c -> new Cookie(c.name(), c.value()))
                 .toArray(Cookie[]::new);
     }
 
@@ -96,18 +113,18 @@ public class RequestAdapter implements HttpServletRequest {
 
     @Override
     public String getHeader(final String name) {
-        final Option<String> option = playDelegate.headers().get(name);
-        return option.isDefined() ? option.get() : null;
+        final List<String> option = playDelegate.getHeaders().getAll(name);
+        return option != null && !option.isEmpty() ? option.iterator().next() : null;
     }
 
     @Override
     public Enumeration<String> getHeaders(final String name) {
-        return enumeration(JavaConverters.asJavaCollection(playDelegate.headers().getAll(name)));
+        return enumeration(playDelegate.getHeaders().getAll(name));
     }
 
     @Override
     public Enumeration<String> getHeaderNames() {
-        return enumeration(JavaConverters.asJavaCollection(playDelegate.headers().keys()));
+        return enumeration(playDelegate.getHeaders().toMap().keySet());
     }
 
     @Override
@@ -126,7 +143,9 @@ public class RequestAdapter implements HttpServletRequest {
 
     @Override
     public String getQueryString() {
-        return playDelegate.rawQueryString();
+        final String uri = playDelegate.uri();
+        final int questionMark = uri.indexOf('?');
+        return questionMark >= 0 ? uri.substring(questionMark + 1) : "";
     }
 
     @Override
@@ -141,7 +160,7 @@ public class RequestAdapter implements HttpServletRequest {
 
     @Override
     public String getContextPath() {
-        return SERVLET_CONTEXT.getContextPath();
+        return context.getContextPath();
     }
 
     @Override
@@ -251,25 +270,19 @@ public class RequestAdapter implements HttpServletRequest {
 
     @Override
     public Object getAttribute(final String name) {
-        return playDelegate.attrs().get(TypedKey.apply(name));
+        return ofNullable(attributes.get(name))
+                .orElseGet(() -> playDelegate.attrs().getOptional(TypedKey.create(name)).orElse(null));
     }
 
     @Override
     public Enumeration<String> getAttributeNames() {
-        final TypedMap attrs = playDelegate.attrs();
-        if (MapLike.class.isInstance(attrs)) {
-            final Collection<TypedKey<String>> keys = JavaConverters.asJavaCollection(MapLike.class.cast(attrs).keys());
-            final Set<String> extractedKeys = keys.stream().map(tk -> OptionConverters.toJava(tk.displayName()))
-                    .filter(Optional::isPresent).map(Optional::get).collect(toSet());
-            return enumeration(extractedKeys);
-        }
-        return emptyEnumeration();
+        return enumeration(attributes.keySet());
     }
 
     @Override
     public String getCharacterEncoding() {
-        return OptionConverters.toJava(playDelegate.charset()).map(RequestAdapter::getCharsetFromContentType)
-                .orElse(StandardCharsets.ISO_8859_1.name());
+        return playDelegate.charset().orElseGet(() -> ofNullable(RequestAdapter.getCharsetFromContentType(getContentType()))
+                .orElse(getServletContext().getRequestCharacterEncoding()));
     }
 
     @Override
@@ -289,18 +302,12 @@ public class RequestAdapter implements HttpServletRequest {
 
     @Override
     public String getContentType() {
-        return OptionConverters.toJava(playDelegate.contentType()).orElse(null);
+        return playDelegate.contentType().orElse(null);
     }
 
     @Override
     public ServletInputStream getInputStream() {
-        try {
-            return inputStream == null
-                    ? (inputStream = new InputStreamAdapter(playDelegate.body().asText(), getCharacterEncoding()))
-                    : inputStream;
-        } catch (final UnsupportedEncodingException e) {
-            throw new IllegalStateException(e);
-        }
+        return inputStream == null ? (inputStream = new InputStreamAdapter(entity)) : inputStream;
     }
 
     @Override
@@ -311,36 +318,32 @@ public class RequestAdapter implements HttpServletRequest {
 
     @Override
     public String getParameter(final String name) {
-        return OptionConverters.toJava(playDelegate.getQueryString(name)).orElseGet(
-                () -> OptionConverters.toJava(playDelegate.contentType()).filter("multipart/form-data"::equalsIgnoreCase)
-                        .map(ct -> playDelegate.body().asFormUrlEncoded().get(name)).filter(v -> v.length > 0).map(v -> v[0])
-                        .orElse(null));
+        return ofNullable(playDelegate.getQueryString(name)).orElseGet(() -> playDelegate.contentType()
+                .filter("multipart/form-data"::equalsIgnoreCase).map(ct -> params.get(name)).orElse(null));
     }
 
     @Override
     public Enumeration<String> getParameterNames() {
-        return enumeration(Stream
-                .concat(JavaConverters.asJavaCollection(playDelegate.queryString().keys()).stream(),
-                        OptionConverters.toJava(playDelegate.contentType()).filter("multipart/form-data"::equalsIgnoreCase)
-                                .map(ct -> playDelegate.body().asFormUrlEncoded().keySet().stream()).orElseGet(Stream::empty))
+        return enumeration(Stream.concat(playDelegate.queryString().keySet().stream(), playDelegate.contentType()
+                .filter("multipart/form-data"::equalsIgnoreCase).map(ct -> params.keySet().stream()).orElseGet(Stream::empty))
                 .collect(toSet()));
     }
 
     @Override
     public String[] getParameterValues(final String name) {
-        return OptionConverters.toJava(playDelegate.getQueryString(name)).map(v -> new String[] { v }).orElseGet(
-                () -> OptionConverters.toJava(playDelegate.contentType()).filter("multipart/form-data"::equalsIgnoreCase)
-                        .map(ct -> playDelegate.body().asFormUrlEncoded().get(name)).orElse(null));
+        return ofNullable(playDelegate.getQueryString(name)).map(v -> new String[] { v })
+                .orElseGet(() -> playDelegate.contentType().filter("multipart/form-data"::equalsIgnoreCase)
+                        .map(ct -> params.get(name)).map(v -> new String[] { v }).orElse(null));
     }
 
     @Override
     public Map<String, String[]> getParameterMap() {
-        final Stream<Map.Entry<String, String[]>> query = JavaConverters.mapAsJavaMap(playDelegate.queryString()).entrySet()
-                .stream().map(kv -> new AbstractMap.SimpleEntry<>(kv.getKey(),
-                        JavaConverters.asJavaCollection(kv.getValue()).toArray(new String[0])));
-        final Stream<Map.Entry<String, String[]>> form = OptionConverters.toJava(playDelegate.contentType())
+        final Stream<Map.Entry<String, String[]>> query = playDelegate.queryString().entrySet().stream();
+        final Stream<AbstractMap.SimpleEntry<String, String[]>> form = playDelegate.contentType()
                 .filter("multipart/form-data"::equalsIgnoreCase)
-                .map(ct -> playDelegate.body().asFormUrlEncoded().entrySet().stream()).orElseGet(Stream::empty);
+                .map(ct -> params.entrySet().stream()
+                        .map(v -> new AbstractMap.SimpleEntry<>(v.getKey(), new String[] { v.getValue() })))
+                .orElseGet(Stream::empty);
         return Stream.concat(query, form).collect(toMap(Map.Entry::getKey, Map.Entry::getValue, (first, second) -> first));
     }
 
@@ -377,12 +380,12 @@ public class RequestAdapter implements HttpServletRequest {
 
     @Override
     public void setAttribute(final String name, final Object o) {
-        playDelegate.attrs().updated(TypedKey.apply(name), o);
+        attributes.put(name, o);
     }
 
     @Override
     public void removeAttribute(final String name) {
-        playDelegate.attrs().updated(TypedKey.apply(name), null);
+        attributes.remove(name);
     }
 
     @Override
@@ -393,8 +396,8 @@ public class RequestAdapter implements HttpServletRequest {
 
     @Override
     public Enumeration<Locale> getLocales() {
-        final Seq<play.api.i18n.Lang> langSeq = playDelegate.acceptLanguages();
-        return enumeration(JavaConverters.asJavaCollection(langSeq).stream().map(play.api.i18n.Lang::locale).collect(toSet()));
+        final List<Lang> langSeq = playDelegate.acceptLanguages();
+        return enumeration(langSeq.stream().map(play.api.i18n.Lang::locale).collect(toSet()));
     }
 
     @Override
@@ -435,28 +438,32 @@ public class RequestAdapter implements HttpServletRequest {
 
     @Override
     public ServletContext getServletContext() {
-        return SERVLET_CONTEXT;
+        return context;
     }
 
     @Override
     public AsyncContext startAsync() throws IllegalStateException {
-        throw new UnsupportedOperationException();
+        asyncStarted = true;
+        return startAsync(this, response);
     }
 
     @Override
     public AsyncContext startAsync(final ServletRequest servletRequest, final ServletResponse servletResponse)
             throws IllegalStateException {
-        throw new UnsupportedOperationException();
+        asyncStarted = true;
+        return new AsyncContextImpl(servletRequest,
+                ResponseAdapter.class.cast(servletRequest.getAttribute(ResponseAdapter.class.getName())), servletResponse,
+                servletRequest == this, injector, servlet).start();
     }
 
     @Override
     public boolean isAsyncStarted() {
-        return false;
+        return asyncStarted;
     }
 
     @Override
     public boolean isAsyncSupported() {
-        return false;
+        return true;
     }
 
     @Override
@@ -467,6 +474,41 @@ public class RequestAdapter implements HttpServletRequest {
     @Override
     public DispatcherType getDispatcherType() {
         return DispatcherType.REQUEST;
+    }
+
+    private void parseParams() {
+        if (params == null) {
+            params = new HashMap<>();
+            final String method = getMethod();
+            if (method != null && (!method.equals("GET") && !method.equals("DELETE") && !method.equals("HEAD")
+                    && !method.equals("OPTIONS"))) {
+                final String contentType = getContentType();
+                if (contentType != null && (contentType.contains("application/x-www-form-urlencoded")
+                        || contentType.contains("multipart/form-data"))) {
+                    try (final BufferedReader r = new BufferedReader(new InputStreamReader(entity))) {
+                        final StringTokenizer parameters = new StringTokenizer(new String(), "&");
+                        while (parameters.hasMoreTokens()) {
+                            final StringTokenizer param = new StringTokenizer(parameters.nextToken(), "=");
+                            String name = URLDecoder.decode(param.nextToken(), "UTF-8");
+                            if (name == null) {
+                                break;
+                            }
+
+                            final String value;
+                            if (param.hasMoreTokens()) {
+                                value = URLDecoder.decode(param.nextToken(), "UTF-8");
+                            } else {
+                                value = "";
+                            }
+
+                            params.put(name, value == null ? "" : value);
+                        }
+                    } catch (final IOException e) {
+                        throw new IllegalArgumentException(e);
+                    }
+                }
+            }
+        }
     }
 
     private static long parseDate(final String value) {
@@ -483,24 +525,24 @@ public class RequestAdapter implements HttpServletRequest {
     private static String getCharsetFromContentType(final String contentType) {
         if (contentType == null) {
             return null;
-        } else {
-            int start = contentType.indexOf("charset=");
-            if (start < 0) {
-                return null;
-            } else {
-                String encoding = contentType.substring(start + 8);
-                int end = encoding.indexOf(59);
-                if (end >= 0) {
-                    encoding = encoding.substring(0, end);
-                }
-
-                encoding = encoding.trim();
-                if (encoding.length() > 2 && encoding.startsWith("\"") && encoding.endsWith("\"")) {
-                    encoding = encoding.substring(1, encoding.length() - 1);
-                }
-
-                return encoding.trim();
-            }
         }
+
+        final int start = contentType.indexOf("charset=");
+        if (start < 0) {
+            return null;
+        }
+
+        String encoding = contentType.substring(start + 8);
+        int end = encoding.indexOf(59);
+        if (end >= 0) {
+            encoding = encoding.substring(0, end);
+        }
+
+        encoding = encoding.trim();
+        if (encoding.length() > 2 && encoding.startsWith("\"") && encoding.endsWith("\"")) {
+            encoding = encoding.substring(1, encoding.length() - 1);
+        }
+
+        return encoding.trim();
     }
 }

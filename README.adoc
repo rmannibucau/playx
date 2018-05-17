@@ -1,0 +1,205 @@
+= Playx
+
+Bring some of Javax to Play!
+
+== Servlet
+
+[source,xml]
+----
+<dependency>
+    <groupId>com.github.rmannibucau</groupId>
+    <artifactId>playx-servlet</artifactId>
+    <version>${playx.version}</version>
+</dependency>
+----
+
+Servlet integration brings the ability to use play as a servlet container.
+
+Setup:
+
+1. Bind a `PlayServletContext` in your IoC to let `ServletFilter` get injected - we assume you are using Guice here:
+
+[source,java]
+----
+public class ServletModule extends AbstractModule {
+
+    @Override
+    protected void configure() {
+        bind(PlayServletContext.class);
+        bind(PlayServletContext.class).toInstance(servletContext);
+    }
+}
+----
+
+2. You can bind servlets to the context using a `ServletContainerInitializer`:
+
+[source,java]
+----
+public class Setup implements ServletContainerInitializer {
+    @Override
+    public void onStartup(final Set<Class<?>> c, final ServletContext servletContext) {
+        {
+            final ServletRegistration.Dynamic servlet = servletContext.addServlet("async", new AsyncServlet());
+            servlet.addMapping("/async");
+            servlet.setAsyncSupported(true);
+        }
+        {
+            final ServletRegistration.Dynamic servlet = servletContext.addServlet("asyncdispatch",
+                    new AsyncDispatchServlet());
+            servlet.addMapping("/asyncdispatch");
+            servlet.setAsyncSupported(true);
+        }
+        {
+            servletContext.addServlet("sync", new SyncServlet()).addMapping("/sync");
+        }
+    }
+}
+----
+
+You can create multiple initializers and must bind them as a collection in the IoC, for guice it can look like:
+
+[source,java]
+----
+bind(new TypeLiteral<Collection<ServletContainerInitializer>>() {})
+    .toInstance(singleton(new Setup()));
+----
+
+3. Bind the `ServletFilter` in your configuration, this is the one responsible to route the requests to the servlet context when relevant (depending the mapping):
+
+[source,config]
+----
+play.filters.enabled.1000 = com.github.rmannibucau.playx.servlet.servlet.api.ServletFilter
+----
+
+IMPORTANT: the number at the end is the position of the filter in the list, it is highly recommanded to put it last since it acts as an endpoint
+and must stay after security filters when in use, if you use a custom `DefaultFilters` ensure it is at the last position.
+
+=== Configuration
+
+[source,config]
+----
+playx {
+  servlet {
+    context = "" // the servlet context to use, default is root
+  }
+
+  executor { // configure the pool used for the servlet operation
+    default = true // will use ForkJoin.commonPool() if true else will use next config block
+
+    core = 64 // when default = false it is the core size of the pool
+    max = 128 // when default = false it is the max size of the pool
+    keepAlive { // how long a thread is kept idle in the pool
+        value = 60
+        unit = SECONDS
+    }
+  }
+}
+----
+
+== IoC
+
+[source,xml]
+----
+<dependency>
+    <groupId>com.github.rmannibucau</groupId>
+    <artifactId>playx-ioc</artifactId>
+    <version>${playx.version}</version>
+</dependency>
+----
+
+This module provides some way to setup a generic IoC and delegate the logic to multiple implementations.
+
+=== Configuration
+
+[source,config]
+----
+// force play to use the playx implementation
+play.application.loader = com.github.rmannibucau.playx.ioc.IoCLoader
+
+// configure the loaders to use
+playx {
+  ioc {
+    loaders = [
+      play.inject.guice.GuiceApplicationLoader,
+      my.container.MyApplicationLoader
+    ]
+    // you can specify a preference for the IoC by package
+    // the key is the package (subpackages are included) and the value
+    // a string contained in the lowercased loader simple name (must not be ambiguous)
+    routing = [
+        { "org.superbiz": "guice" },
+        { "com.app": "my" }
+    ]
+  }
+}
+----
+
+The `Application` loaded by the `IoCLoader` will be the first one in the list.
+
+== CDI
+
+[source,xml]
+----
+<dependency>
+    <groupId>com.github.rmannibucau</groupId>
+    <artifactId>playx-cdi</artifactId>
+    <version>${playx.version}</version>
+</dependency>
+----
+
+The CDI module allows to start a CDI 2.0 standalone container and use it either with ioc module
+or just as a contextual CDI (i.e. not linked to play IoC but embedded in play).
+
+IMPORTANT: the play IoC model being very tight to Guice due its module definition which is not supported yet
+in CDI integration, you can need to define some play beans to use it as the main and unique loader for your application.
+
+=== Configuration
+
+Check out the `javax.enterprise.inject.se.SeContainerInitializer` API for the meaning of each configuration entry.
+
+[source,config]
+----
+playx {
+  cdi {
+    // same as play.allowGlobalApplication but for this IoC
+    allowGlobalApplication = false
+
+    beans { // should default play bean be added to CDI context
+      default = true
+    }
+
+    container { // all is optional
+      disableDiscovery = false,
+      beanClasses = [
+        com.app.Foo,
+        com.app.Bar
+      ],
+      packages = [
+        org.superbiz, // shortcut for next line syntax with recursive=false
+        { package: "org.apache.deltaspike", recursive: true }
+      ],
+      properties = [ // mainly vendor specific
+        { key: "foo", value: "bar" }
+      ],
+      extensions = [
+        org.apache.deltaspike.core.api.provider.BeanManagerProvider,
+        org.apache.deltaspike.core.impl.config.ConfigurationExtension,
+        org.apache.deltaspike.core.impl.jmx.MBeanExtension,
+        org.apache.johnzon.jsonb.cdi.JohnzonCdiExtension
+      ],
+      decorators = [
+        org.app.MyDecorator
+      ],
+      interceptor = [
+        org.app.MyInterceptor
+      ],
+      alternatives = [
+        org.app.MyAlternative
+      ],
+      alternativeStereotypes = [
+        org.app.MyStereotype
+      ]
+  }
+}
+----
+
