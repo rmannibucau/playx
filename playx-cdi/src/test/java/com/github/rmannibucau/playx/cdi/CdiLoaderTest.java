@@ -1,5 +1,7 @@
 package com.github.rmannibucau.playx.cdi;
 
+import static java.util.Collections.singletonList;
+import static java.util.Collections.singletonMap;
 import static org.hamcrest.CoreMatchers.instanceOf;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -24,6 +26,8 @@ import play.Environment;
 import play.Mode;
 import play.inject.Injector;
 
+import javax.enterprise.inject.Vetoed;
+
 public class CdiLoaderTest {
 
     private static Application app;
@@ -39,6 +43,7 @@ public class CdiLoaderTest {
 
                         {
                             put("play.application.loader", CdiLoader.class.getName());
+                            put("playx.cdi.beans.customs", singletonList(singletonMap("className", MyConfiguredBean.class.getName())));
                         }
                     });
             final ApplicationLoader loader = ApplicationLoader.apply(context);
@@ -71,6 +76,12 @@ public class CdiLoaderTest {
         assertEquals("ok", injector.instanceOf(MyService.class).test());
     }
 
+    @Test
+    public void checkCustombeans() {
+        final Injector injector = app.injector();
+        assertEquals("called", injector.instanceOf(MyConfiguredBean.class).call());
+    }
+
     private static Object getField(final Object root, final String field) {
         Class<?> clazz = root.getClass();
         while (clazz != null) {
@@ -83,5 +94,12 @@ public class CdiLoaderTest {
             }
         }
         throw new IllegalStateException("No field " + field + " in " + root);
+    }
+
+    @Vetoed
+    public static class MyConfiguredBean {
+        public String call() {
+            return "called";
+        }
     }
 }

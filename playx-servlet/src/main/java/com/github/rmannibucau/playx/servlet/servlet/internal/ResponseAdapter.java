@@ -66,12 +66,22 @@ public class ResponseAdapter implements HttpServletResponse {
         if (completion.isDone()) {
             return;
         }
+        try {
+            flushBuffer();
+        } catch (final IOException e) {
+            // no-op
+        }
         completion.completeExceptionally(error);
     }
 
     public void onComplete() {
         if (completion.isDone()) {
             return;
+        }
+        try {
+            flushBuffer();
+        } catch (final IOException e) {
+            // no-op
         }
         completion.complete(new Result(status, headers,
                 new HttpEntity.Strict(ByteString.fromArray(output.toByteArray()), ofNullable(getContentType()))));
@@ -257,6 +267,9 @@ public class ResponseAdapter implements HttpServletResponse {
 
     @Override
     public void flushBuffer() throws IOException {
+        if (writer != null) {
+            writer.flush();
+        }
         output.flush();
     }
 

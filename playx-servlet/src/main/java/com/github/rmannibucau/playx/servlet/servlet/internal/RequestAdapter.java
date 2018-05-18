@@ -3,6 +3,7 @@ package com.github.rmannibucau.playx.servlet.servlet.internal;
 import static java.util.Collections.emptyList;
 import static java.util.Collections.enumeration;
 import static java.util.Optional.ofNullable;
+import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.toMap;
 import static java.util.stream.Collectors.toSet;
 
@@ -71,6 +72,8 @@ public class RequestAdapter implements HttpServletRequest {
 
     private final DynamicServlet servlet;
 
+    private final String servletPath;
+
     private ServletInputStream inputStream;
 
     private BufferedReader reader;
@@ -82,13 +85,14 @@ public class RequestAdapter implements HttpServletRequest {
     private Map<String, String> params;
 
     public RequestAdapter(final Http.RequestHeader request, final InputStream entity, final ServletResponse response,
-            final Injector injector, final ServletContext context, final DynamicServlet servlet) {
+            final Injector injector, final ServletContext context, final DynamicServlet servlet, final String servletPath) {
         this.context = context;
         this.playDelegate = request;
         this.entity = entity;
         this.response = response;
         this.injector = injector;
         this.servlet = servlet;
+        this.servletPath = servletPath;
         parseParams();
     }
 
@@ -148,9 +152,19 @@ public class RequestAdapter implements HttpServletRequest {
         return questionMark >= 0 ? uri.substring(questionMark + 1) : "";
     }
 
-    @Override
+    @Override // part of the request path not part of the context path and servlet path
     public String getPathInfo() {
-        return "/";
+        if ("/".equals(servletPath)) { // default servlet, particular case
+            return null;
+        }
+        final String servletUri = getRequestURI().substring(getContextPath().length());
+        if (servletUri.startsWith(servletPath)) { // /xxx/* matching
+            final String queryString = getQueryString();
+            final String servletUriNoQuery = queryString.isEmpty() ? servletUri : servletUri.substring(0,
+                    servletUri.length() - queryString.length() - 1);
+            return servletUriNoQuery.substring(servletPath.length());
+        }
+        return null;
     }
 
     @Override
@@ -195,12 +209,17 @@ public class RequestAdapter implements HttpServletRequest {
 
     @Override
     public StringBuffer getRequestURL() {
-        return new StringBuffer(playDelegate.uri());
+        final StringBuffer base = new StringBuffer(getScheme()).append("://").append(getServerName());
+        final int serverPort = getServerPort();
+        if (serverPort != 80 && serverPort != 443) {
+            base.append(':').append(serverPort);
+        }
+        return base.append(getRequestURI());
     }
 
     @Override
     public String getServletPath() {
-        return "/";
+        return servletPath;
     }
 
     @Override
@@ -359,12 +378,16 @@ public class RequestAdapter implements HttpServletRequest {
 
     @Override
     public String getServerName() {
-        return playDelegate.host();
+        final String host = playDelegate.host();
+        final int sep = host.indexOf(':');
+        return sep < 0 ? host : host.substring(0, sep);
     }
 
     @Override
     public int getServerPort() {
-        return 8080; // TODO
+        final String host = playDelegate.host();
+        final int sep = host.indexOf(':');
+        return sep < 0 ? (playDelegate.secure() ? 443 : 80) : Integer.parseInt(host.substring(sep + 1));
     }
 
     @Override
@@ -486,7 +509,7 @@ public class RequestAdapter implements HttpServletRequest {
                 if (contentType != null && (contentType.contains("application/x-www-form-urlencoded")
                         || contentType.contains("multipart/form-data"))) {
                     try (final BufferedReader r = new BufferedReader(new InputStreamReader(entity))) {
-                        final StringTokenizer parameters = new StringTokenizer(new String(), "&");
+                        final StringTokenizer parameters = new StringTokenizer(r.lines().collect(joining("\n")), "&");
                         while (parameters.hasMoreTokens()) {
                             final StringTokenizer param = new StringTokenizer(parameters.nextToken(), "=");
                             String name = URLDecoder.decode(param.nextToken(), "UTF-8");

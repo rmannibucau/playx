@@ -23,7 +23,8 @@ public class RequestDispatcherImpl implements RequestDispatcher {
     private void doExecute(final ServletRequest request, final ServletResponse response) {
         context.getDefaultExecutor().execute(() -> {
             final DynamicServlet dynamicServlet = context.findFirstMatchingServlet(path)
-                    .orElseThrow(() -> new IllegalArgumentException("No matching servlet for path '" + path + "'"));
+                    .orElseThrow(() -> new IllegalArgumentException("No matching servlet for path '" + path + "'"))
+                    .getDynamicServlet();
             try {
                 dynamicServlet.getInstance().service(request, response);
             } catch (final ServletException | IOException e) {

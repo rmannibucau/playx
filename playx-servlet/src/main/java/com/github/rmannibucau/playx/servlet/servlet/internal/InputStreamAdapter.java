@@ -46,7 +46,9 @@ class InputStreamAdapter extends ServletInputStream {
             final int read = buffer.read();
             if (read < 0) {
                 done = true;
-                listener.onAllDataRead();
+                if (listener != null) {
+                    listener.onAllDataRead();
+                }
             }
             return read;
         } catch (final Throwable ioe) {

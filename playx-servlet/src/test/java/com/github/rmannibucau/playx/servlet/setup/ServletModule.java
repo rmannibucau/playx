@@ -11,6 +11,7 @@ import javax.servlet.ServletRegistration;
 
 import com.github.rmannibucau.playx.servlet.servlet.AsyncDispatchServlet;
 import com.github.rmannibucau.playx.servlet.servlet.AsyncServlet;
+import com.github.rmannibucau.playx.servlet.servlet.RequestDataServlet;
 import com.github.rmannibucau.playx.servlet.servlet.SyncServlet;
 import com.github.rmannibucau.playx.servlet.servlet.api.PlayServletContext;
 import com.google.inject.AbstractModule;
@@ -22,7 +23,8 @@ public class ServletModule extends AbstractModule {
     protected void configure() {
         bind(PlayServletContext.class);
         // this way we can support a list of initializers
-        bind(new TypeLiteral<Collection<ServletContainerInitializer>>() {}).toInstance(singleton(new Setup()));
+        bind(new TypeLiteral<Collection<ServletContainerInitializer>>() {
+        }).toInstance(singleton(new Setup()));
     }
 
     public static class Setup implements ServletContainerInitializer {
@@ -43,6 +45,11 @@ public class ServletModule extends AbstractModule {
                 final ServletRegistration.Dynamic servlet = servletContext.addServlet("asyncdispatch",
                         new AsyncDispatchServlet());
                 servlet.addMapping("/asyncdispatch");
+                servlet.setAsyncSupported(true);
+            }
+            {
+                final ServletRegistration.Dynamic servlet = servletContext.addServlet("request", new RequestDataServlet());
+                servlet.addMapping("/request");
                 servlet.setAsyncSupported(true);
             }
             {

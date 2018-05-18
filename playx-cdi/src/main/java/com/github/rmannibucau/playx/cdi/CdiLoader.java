@@ -1,20 +1,27 @@
 package com.github.rmannibucau.playx.cdi;
 
-import static java.util.Collections.emptyList;
 import static java.util.Collections.emptyMap;
+import static java.util.Objects.requireNonNull;
+import static java.util.Optional.ofNullable;
+import static java.util.stream.Collectors.toList;
 
 import java.io.File;
 import java.io.InputStream;
 import java.lang.annotation.Annotation;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import javax.enterprise.context.ApplicationScoped;
 import javax.enterprise.context.Dependent;
 import javax.enterprise.event.Observes;
 import javax.enterprise.inject.Any;
@@ -22,9 +29,13 @@ import javax.enterprise.inject.Default;
 import javax.enterprise.inject.se.SeContainer;
 import javax.enterprise.inject.se.SeContainerInitializer;
 import javax.enterprise.inject.spi.AfterBeanDiscovery;
+import javax.enterprise.inject.spi.AnnotatedType;
 import javax.enterprise.inject.spi.BeanManager;
 import javax.enterprise.inject.spi.BeforeBeanDiscovery;
 import javax.enterprise.inject.spi.Extension;
+import javax.enterprise.inject.spi.InjectionTarget;
+import javax.enterprise.inject.spi.configurator.BeanConfigurator;
+import javax.inject.Singleton;
 
 import org.slf4j.ILoggerFactory;
 import org.slf4j.LoggerFactory;
@@ -48,6 +59,7 @@ import play.api.Mode;
 import play.api.OptionalSourceMapper;
 import play.api.http.ActionCompositionConfiguration;
 import play.api.http.CookiesConfiguration;
+import play.api.http.EnabledFilters;
 import play.api.http.FileMimeTypesConfiguration;
 import play.api.http.FlashConfiguration;
 import play.api.http.HttpConfiguration;
@@ -92,6 +104,7 @@ import play.mvc.EssentialFilter;
 import play.mvc.FileMimeTypes;
 import play.routing.Router;
 import scala.Option;
+import scala.collection.JavaConverters;
 import scala.compat.java8.OptionConverters;
 import scala.concurrent.ExecutionContext;
 import scala.concurrent.ExecutionContextExecutor;
@@ -100,16 +113,17 @@ import scala.reflect.ClassTag;
 
 public class CdiLoader implements ApplicationLoader {
 
+    final BiFunction<Context, String, Class<?>> classLoader = (context, className) -> {
+        try {
+            return context.environment().classLoader().loadClass(className.trim());
+        } catch (final ClassNotFoundException e) {
+            throw new IllegalArgumentException(e);
+        }
+    };
+
     @Override
     public Application load(final Context context) {
         final Config config = context.initialConfig();
-        final Function<String, Class<?>> classLoader = s -> {
-            try {
-                return context.environment().classLoader().loadClass(s.trim());
-            } catch (final ClassNotFoundException e) {
-                throw new IllegalArgumentException(e);
-            }
-        };
         final Function<String, Package> packageLoader = s -> {
             try {
                 return context.environment().classLoader().loadClass(s.trim() + ".package-info.class").getPackage();
@@ -124,7 +138,8 @@ public class CdiLoader implements ApplicationLoader {
             initializer.disableDiscovery();
         }
         safeConfigAccess(config, "playx.cdi.container.beanClasses", Config::getStringList)
-                .map(list -> list.stream().map(classLoader).toArray(Class<?>[]::new)).ifPresent(initializer::addBeanClasses);
+                .map(list -> list.stream().map(c -> classLoader.apply(context, c)).toArray(Class<?>[]::new))
+                .ifPresent(initializer::addBeanClasses);
         safeConfigAccess(config, "playx.cdi.container.packages", Config::getList).ifPresent(pcks -> pcks.forEach(value -> {
             if (value.valueType() == ConfigValueType.OBJECT) {
                 final ConfigObject object = ConfigObject.class.cast(value);
@@ -141,18 +156,19 @@ public class CdiLoader implements ApplicationLoader {
         safeConfigAccess(config, "playx.cdi.container.properties", Config::getObjectList).ifPresent(properties -> properties
                 .forEach(value -> initializer.addProperty(value.get("key").render(), value.get("value").unwrapped())));
         safeConfigAccess(config, "playx.cdi.container.extensions", Config::getStringList).ifPresent(extensions -> {
-            final Class<? extends Extension>[] extInstances = extensions.stream().map(classLoader).toArray(Class[]::new);
+            final Class<? extends Extension>[] extInstances = extensions.stream().map(c -> classLoader.apply(context, c))
+                    .toArray(Class[]::new);
             initializer.addExtensions(extInstances);
         });
-        safeConfigAccess(config, "playx.cdi.container.decorators", Config::getStringList).ifPresent(
-                extensions -> initializer.enableDecorators(extensions.stream().map(classLoader).toArray(Class[]::new)));
-        safeConfigAccess(config, "playx.cdi.container.interceptors", Config::getStringList).ifPresent(
-                extensions -> initializer.enableInterceptors(extensions.stream().map(classLoader).toArray(Class[]::new)));
-        safeConfigAccess(config, "playx.cdi.container.alternatives", Config::getStringList).ifPresent(
-                extensions -> initializer.selectAlternatives(extensions.stream().map(classLoader).toArray(Class[]::new)));
+        safeConfigAccess(config, "playx.cdi.container.decorators", Config::getStringList).ifPresent(extensions -> initializer
+                .enableDecorators(extensions.stream().map(c -> classLoader.apply(context, c)).toArray(Class[]::new)));
+        safeConfigAccess(config, "playx.cdi.container.interceptors", Config::getStringList).ifPresent(extensions -> initializer
+                .enableInterceptors(extensions.stream().map(c -> classLoader.apply(context, c)).toArray(Class[]::new)));
+        safeConfigAccess(config, "playx.cdi.container.alternatives", Config::getStringList).ifPresent(extensions -> initializer
+                .selectAlternatives(extensions.stream().map(c -> classLoader.apply(context, c)).toArray(Class[]::new)));
         safeConfigAccess(config, "playx.cdi.container.alternativeStereotypes", Config::getStringList).ifPresent(extensions -> {
-            final Class<? extends Annotation>[] alternativeStereotypeClasses = extensions.stream().map(classLoader)
-                    .toArray(Class[]::new);
+            final Class<? extends Annotation>[] alternativeStereotypeClasses = extensions.stream()
+                    .map(c -> classLoader.apply(context, c)).toArray(Class[]::new);
             initializer.selectAlternativeStereotypes(alternativeStereotypeClasses);
         });
 
@@ -178,45 +194,101 @@ public class CdiLoader implements ApplicationLoader {
         initializer.addExtensions(new Extension() { // todo: make it more configured and modular reusing
 
             void addSingletons(@Observes final BeforeBeanDiscovery event, final BeanManager beanManager) {
-                Stream.of(Assets.class, Files.DefaultTemporaryFileCreator.class, Files.DefaultTemporaryFileReaper.class,
-                        DefaultPlayBodyParsers.class, BodyParsers.Default.class, DefaultActionBuilderImpl.class,
-                        DefaultControllerComponents.class, DefaultMessagesActionBuilderImpl.class,
+                // integration with servlet module
+                final Collection<Class<?>> extensions = new ArrayList<>();
+                try {
+                    extensions.add(environment.classLoader()
+                            .loadClass("com.github.rmannibucau.playx.servlet.servlet.api.ServletFilter"));
+                } catch (final Exception e) {
+                    // no-op
+                }
+
+                Stream.concat(Stream.of(Assets.class, Files.DefaultTemporaryFileCreator.class,
+                        Files.DefaultTemporaryFileReaper.class, DefaultPlayBodyParsers.class, BodyParsers.Default.class,
+                        DefaultActionBuilderImpl.class, DefaultControllerComponents.class, DefaultMessagesActionBuilderImpl.class,
                         DefaultMessagesControllerComponents.class, DefaultFutures.class,
-                        play.api.libs.concurrent.DefaultFutures.class, HttpExecutionContext.class,
-                        DefaultAssetsMetadata.class)
-                        .forEach(it -> event.addAnnotatedType(beanManager.createAnnotatedType(it)));
+                        play.api.libs.concurrent.DefaultFutures.class, HttpExecutionContext.class, DefaultAssetsMetadata.class),
+                        extensions.stream()).forEach(it -> event.addAnnotatedType(beanManager.createAnnotatedType(it)));
             }
 
-            void addProvidedBeans(@Observes final AfterBeanDiscovery event) {
+            void addProvidedBeans(@Observes final AfterBeanDiscovery event, final BeanManager beanManager) {
+                addPlayBeans(event);
+                addCustomBeans(event, beanManager);
+            }
+
+            private void addCustomBeans(final AfterBeanDiscovery event, final BeanManager beanManager) {
+                safeConfigAccess(config, "playx.cdi.beans.customs", Config::getObjectList)
+                        .ifPresent(beans -> beans.forEach(bean -> {
+                            final String className = requireNonNull(bean.get("className"), "className can't be null: " + bean)
+                                    .unwrapped().toString();
+                            final Class beanClass = classLoader.apply(context, className);
+
+                            final String scope = ofNullable(bean.get("scope")).map(s -> s.unwrapped().toString())
+                                    .orElse("javax.enterprise.context.Dependent");
+                            final Class<? extends Annotation> scopeAnnotation;
+                            switch (scope) {
+                            case "javax.enterprise.context.ApplicationScoped":
+                                scopeAnnotation = ApplicationScoped.class;
+                                break;
+                            case "javax.inject.Singleton":
+                                scopeAnnotation = Singleton.class;
+                                break;
+                            case "javax.enterprise.context.Dependent":
+                                scopeAnnotation = Dependent.class;
+                                break;
+                            default:
+                                scopeAnnotation = (Class<? extends Annotation>) classLoader.apply(context, scope);
+                            }
+
+                            final BeanConfigurator<Object> configurator = event.addBean();
+                            ofNullable(bean.get("id")).map(s -> s.unwrapped().toString()).ifPresent(configurator::id);
+                            configurator.beanClass(beanClass).scope(scopeAnnotation);
+                            ofNullable(bean.get("transitiveTypeClosure")).filter(v -> Boolean.class.cast(v.unwrapped()))
+                                    .map(v -> configurator.addTransitiveTypeClosure(beanClass))
+                                    .orElseGet(() -> configurator.types(beanClass, Object.class));
+                            ofNullable(bean.get("qualifiers")).map(v -> {
+                                throw new IllegalArgumentException("Not yet supported");
+                            }).orElseGet(() -> configurator.qualifiers(Default.Literal.INSTANCE, Any.Literal.INSTANCE));
+
+                            addBeanLifecycle(beanManager, beanClass, configurator);
+                        }));
+            }
+
+            private <T> void addBeanLifecycle(final BeanManager beanManager, final Class<T> beanClass,
+                    final BeanConfigurator<T> configurator) {
+                final AnnotatedType<T> annotatedType = beanManager.createAnnotatedType(beanClass);
+                final InjectionTarget<T> injectionTarget = beanManager.createInjectionTarget(annotatedType);
+
+                configurator.createWith(injectionTarget::produce).destroyWith((o, ctx) -> injectionTarget.dispose(o));
+            }
+
+            private void addPlayBeans(final AfterBeanDiscovery event) {
                 // core
-                addBean(event, LoggerConfigurator.apply(environment.classLoader()).map(lc -> {
+                addBean(event, new LazyProvider<>(() -> LoggerConfigurator.apply(environment.classLoader()).map(lc -> {
                     lc.configure(environment, context.initialConfig(), emptyMap());
                     return lc.loggerFactory();
-                }).orElseGet(LoggerFactory::getILoggerFactory), ILoggerFactory.class);
+                }).orElseGet(LoggerFactory::getILoggerFactory)), ILoggerFactory.class);
 
-                addBean(event, environment, play.Environment.class);
-                addBean(event, environment.asScala(), Environment.class);
-                addBean(event, context.applicationLifecycle(), ApplicationLifecycle.class);
-                addBean(event, context.applicationLifecycle().asScala(), play.api.inject.ApplicationLifecycle.class);
-                addBean(event, config, Config.class);
-                addBean(event, configuration, Configuration.class);
-                addBean(event, application, Application.class);
-                addBean(event, application.asScala(), play.api.Application.class);
-                addBean(event, injector, Injector.class);
-                addBean(event, injector.asScala(), play.api.inject.Injector.class);
-                addBean(event, context.asScala().webCommands(), WebCommands.class);
-                addBean(event, new OptionalSourceMapper(OptionConverters.toScala(context.sourceMapper())),
+                addBean(event, () -> environment, play.Environment.class);
+                addBean(event, environment::asScala, Environment.class);
+                addBean(event, context::applicationLifecycle, ApplicationLifecycle.class);
+                addBean(event, () -> context.applicationLifecycle().asScala(), play.api.inject.ApplicationLifecycle.class);
+                addBean(event, () -> config, Config.class);
+                addBean(event, () -> configuration, Configuration.class);
+                addBean(event, () -> application, Application.class);
+                addBean(event, application::asScala, play.api.Application.class);
+                addBean(event, () -> injector, Injector.class);
+                addBean(event, injector::asScala, play.api.inject.Injector.class);
+                addBean(event, () -> context.asScala().webCommands(), WebCommands.class);
+                addBean(event,
+                        new LazyProvider<>(() -> new OptionalSourceMapper(OptionConverters.toScala(context.sourceMapper()))),
                         OptionalSourceMapper.class);
 
                 // i18n
-                final play.api.i18n.Langs langs = new DefaultLangsProvider(configuration).get();
+                final Supplier<play.api.i18n.Langs> langs = new LazyProvider<>(
+                        () -> new DefaultLangsProvider(configuration).get());
                 addBean(event, langs, play.api.i18n.Langs.class);
-                addBean(event, langs.asJava(), Langs.class);
-
-                final play.api.i18n.MessagesApi messagesApi = new DefaultMessagesApiProvider(environment.asScala(), configuration,
-                        langs, null).get();
-                addBean(event, messagesApi.asJava(), MessagesApi.class);
-                addBean(event, messagesApi, play.api.i18n.MessagesApi.class);
+                addBean(event, () -> langs.get().asJava(), Langs.class);
 
                 // built-in
                 final BuiltInComponentsFromContext builtInComponentsFromContext = new BuiltInComponentsFromContext(context) {
@@ -233,73 +305,100 @@ public class CdiLoader implements ApplicationLoader {
 
                     @Override
                     public List<EssentialFilter> httpFilters() {
-                        return emptyList();
+                        final EnabledFilters enabledFilters = new EnabledFilters(environment.asScala(), configuration,
+                                injector.asScala());
+                        return JavaConverters.asJavaCollection(enabledFilters.filters().toList()).stream()
+                                .map(play.api.mvc.EssentialFilter::asJava).collect(toList());
                     }
                 };
 
-                final HttpConfiguration httpConfiguration = builtInComponentsFromContext.httpConfiguration();
-                final CookiesConfiguration cookiesConfiguration = httpConfiguration.cookies();
+                final Supplier<HttpConfiguration> httpConfiguration = new LazyProvider<>(
+                        builtInComponentsFromContext::httpConfiguration);
+                final Supplier<CookiesConfiguration> cookiesConfiguration = new LazyProvider<>(
+                        () -> httpConfiguration.get().cookies());
+
+                final Supplier<play.api.i18n.MessagesApi> messagesApi = new LazyProvider<>(
+                        () -> new DefaultMessagesApiProvider(environment.asScala(), configuration, langs.get(),
+                                httpConfiguration.get()).get());
+                addBean(event, messagesApi, play.api.i18n.MessagesApi.class);
+                addBean(event, () -> messagesApi.get().asJava(), MessagesApi.class);
 
                 addBean(event, httpConfiguration, HttpConfiguration.class);
-                addBean(event, httpConfiguration.parser(), ParserConfiguration.class);
-                addBean(event, httpConfiguration.session(), SessionConfiguration.class);
-                addBean(event, httpConfiguration.secret(), SecretConfiguration.class);
-                addBean(event, httpConfiguration.flash(), FlashConfiguration.class);
+                addBean(event, new LazyProvider<>(() -> httpConfiguration.get().parser()), ParserConfiguration.class);
+                addBean(event, new LazyProvider<>(() -> httpConfiguration.get().session()), SessionConfiguration.class);
+                addBean(event, new LazyProvider<>(() -> httpConfiguration.get().secret()), SecretConfiguration.class);
+                addBean(event, new LazyProvider<>(() -> httpConfiguration.get().flash()), FlashConfiguration.class);
                 addBean(event, cookiesConfiguration, CookiesConfiguration.class);
-                addBean(event, httpConfiguration.actionComposition(), ActionCompositionConfiguration.class);
-                addBean(event, httpConfiguration.fileMimeTypes(), FileMimeTypesConfiguration.class);
-                addBean(event, new DefaultCookieHeaderEncoding(cookiesConfiguration), CookieHeaderEncoding.class);
-                addBean(event, AssetsConfiguration.fromConfiguration(configuration, environment.mode().asScala()), AssetsConfiguration.class);
+                addBean(event, new LazyProvider<>(() -> httpConfiguration.get().actionComposition()),
+                        ActionCompositionConfiguration.class);
+                addBean(event, new LazyProvider<>(() -> httpConfiguration.get().fileMimeTypes()),
+                        FileMimeTypesConfiguration.class);
+                addBean(event, new LazyProvider<>(() -> new DefaultCookieHeaderEncoding(cookiesConfiguration.get())),
+                        CookieHeaderEncoding.class);
+                addBean(event,
+                        new LazyProvider<>(
+                                () -> AssetsConfiguration.fromConfiguration(configuration, environment.mode().asScala())),
+                        AssetsConfiguration.class);
 
-                final Files.TemporaryFileReaperConfiguration instance = Files.TemporaryFileReaperConfiguration$.MODULE$
-                        .fromConfiguration(configuration);
+                final Supplier<Files.TemporaryFileReaperConfiguration> instance = new LazyProvider<>(
+                        () -> Files.TemporaryFileReaperConfiguration$.MODULE$.fromConfiguration(configuration));
                 addBean(event, instance, Files.TemporaryFileReaperConfiguration.class);
 
-                addBean(event, builtInComponentsFromContext.router().asScala(), play.api.routing.Router.class);
-                addBean(event, builtInComponentsFromContext.router(), Router.class);
+                addBean(event, new LazyProvider<>(() -> builtInComponentsFromContext.router().asScala()),
+                        play.api.routing.Router.class);
+                addBean(event, new LazyProvider<>(builtInComponentsFromContext::router), Router.class);
 
-                final ActorSystem actorSystem = builtInComponentsFromContext.actorSystem();
+                final Supplier<ActorSystem> actorSystem = new LazyProvider<>(builtInComponentsFromContext::actorSystem);
                 addBean(event, actorSystem, ActorSystem.class);
-                addBean(event, builtInComponentsFromContext.materializer(), Materializer.class);
+                addBean(event, new LazyProvider<>(builtInComponentsFromContext::materializer), Materializer.class);
 
-                final ExecutionContextExecutor executionContextExecutor = new ExecutionContextProvider(actorSystem).get();
+                final Supplier<ExecutionContextExecutor> executionContextExecutor = new LazyProvider<>(
+                        () -> new ExecutionContextProvider(actorSystem.get()).get());
                 addBean(event, executionContextExecutor, ExecutionContextExecutor.class, Executor.class, ExecutionContext.class);
 
-                final play.http.HttpRequestHandler httpRequestHandler = builtInComponentsFromContext.httpRequestHandler();
+                final Supplier<play.http.HttpRequestHandler> httpRequestHandler = new LazyProvider<>(
+                        builtInComponentsFromContext::httpRequestHandler);
                 addBean(event, httpRequestHandler, play.http.HttpRequestHandler.class);
-                addBean(event, httpRequestHandler.asScala(), HttpRequestHandler.class);
+                addBean(event, new LazyProvider<>(() -> httpRequestHandler.get().asScala()), HttpRequestHandler.class);
 
-                final RequestFactory requestFactory = new DefaultRequestFactory(httpConfiguration);
+                final Supplier<RequestFactory> requestFactory = new LazyProvider<>(
+                        () -> new DefaultRequestFactory(httpConfiguration.get()));
                 addBean(event, requestFactory, RequestFactory.class);
 
-                final FileMimeTypes fileMimeTypes = builtInComponentsFromContext.fileMimeTypes();
+                final Supplier<FileMimeTypes> fileMimeTypes = new LazyProvider<>(builtInComponentsFromContext::fileMimeTypes);
                 addBean(event, fileMimeTypes, FileMimeTypes.class);
-                addBean(event, fileMimeTypes.asScala(), play.api.http.FileMimeTypes.class);
+                addBean(event, new LazyProvider<>(() -> fileMimeTypes.get().asScala()), play.api.http.FileMimeTypes.class);
 
-                final JavaContextComponents javaContextComponents = new DefaultJavaContextComponents(messagesApi.asJava(),
-                        langs.asJava(), fileMimeTypes, httpConfiguration);
+                final Supplier<JavaContextComponents> javaContextComponents = new LazyProvider<>(
+                        () -> new DefaultJavaContextComponents(messagesApi.get().asJava(), langs.get().asJava(),
+                                fileMimeTypes.get(), httpConfiguration.get()));
 
-                final play.http.HttpErrorHandler errorHandler = builtInComponentsFromContext.httpErrorHandler();
-                addBean(event, new JavaHttpErrorHandlerAdapter(errorHandler, javaContextComponents), HttpErrorHandler.class);
+                final Supplier<play.http.HttpErrorHandler> errorHandler = new LazyProvider<>(
+                        builtInComponentsFromContext::httpErrorHandler);
+                addBean(event,
+                        new LazyProvider<>(
+                                () -> new JavaHttpErrorHandlerAdapter(errorHandler.get(), javaContextComponents.get())),
+                        HttpErrorHandler.class);
                 addBean(event, errorHandler, play.http.HttpErrorHandler.class);
 
-                final CookieSigner cookieSigner = builtInComponentsFromContext.cookieSigner();
+                final Supplier<CookieSigner> cookieSigner = new LazyProvider<>(builtInComponentsFromContext::cookieSigner);
                 addBean(event, cookieSigner, CookieSigner.class);
-                addBean(event, cookieSigner.asScala(), play.api.libs.crypto.CookieSigner.class);
+                addBean(event, () -> cookieSigner.get().asScala(), play.api.libs.crypto.CookieSigner.class);
 
-                final CSRFTokenSigner csrfTokenSigner = builtInComponentsFromContext.csrfTokenSigner();
+                final Supplier<CSRFTokenSigner> csrfTokenSigner = new LazyProvider<>(
+                        builtInComponentsFromContext::csrfTokenSigner);
                 addBean(event, csrfTokenSigner, CSRFTokenSigner.class);
-                addBean(event, csrfTokenSigner.asScala(), play.api.libs.crypto.CSRFTokenSigner.class);
+                addBean(event, () -> csrfTokenSigner.get().asScala(), play.api.libs.crypto.CSRFTokenSigner.class);
             }
 
-            private <T> void addBean(final AfterBeanDiscovery event, final T instance, final Class<T> mainApi,
+            private <T> void addBean(final AfterBeanDiscovery event, final Supplier<T> instance, final Class<T> mainApi,
                     final Class<?>... types) {
                 event.addBean().id(toId(mainApi)).beanClass(Injector.class)
                         .types(Stream.concat(Stream.of(mainApi), Stream.concat(Stream.of(types), Stream.of(Object.class)))
                                 .toArray(Class[]::new))
                         .qualifiers(Default.Literal.INSTANCE, Any.Literal.INSTANCE)
                         .scope(Dependent.class/* to avoid proxies, singleton in practise cause we return a single instance */)
-                        .createWith(ctx -> instance);
+                        .createWith(ctx -> instance.get());
             }
 
             private <T> String toId(final Class<T> type) {
@@ -530,6 +629,34 @@ public class CdiLoader implements ApplicationLoader {
         @Override
         public Injector injector() {
             return injector;
+        }
+    }
+
+    private static class LazyProvider<T> implements Supplier<T> {
+
+        private final AtomicReference<T> ref = new AtomicReference<>();
+
+        private final Supplier<T> delegate;
+
+        private LazyProvider(final Supplier<T> delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public T get() {
+            T val = ref.get();
+            if (val == null) {
+                synchronized (this) {
+                    val = ref.get();
+                    if (val == null) {
+                        val = delegate.get();
+                        if (!ref.compareAndSet(null, val)) {
+                            val = ref.get();
+                        }
+                    }
+                }
+            }
+            return val;
         }
     }
 }

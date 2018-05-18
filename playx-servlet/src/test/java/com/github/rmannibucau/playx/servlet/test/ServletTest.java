@@ -53,6 +53,12 @@ public class ServletTest {
     };
 
     @Test
+    public void request() {
+        doTest("/request", "uri=/request\nurl=http://localhost:" + server.port() + "/request\ncontext=\n"
+                + "servlet=/request\npathinfo=");
+    }
+
+    @Test
     public void star() {
         doTest("/star/async/test", "{\"text\":\"/star/async/test\"}");
     }

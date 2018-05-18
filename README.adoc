@@ -31,7 +31,7 @@ public class ServletModule extends AbstractModule {
 }
 ----
 
-2. You can bind servlets to the context using a `ServletContainerInitializer`:
+2. You can bind servlets to the context using a `ServletContainerInitializer` (see configuration for an alternate way to bind servlets):
 
 [source,java]
 ----
@@ -74,6 +74,12 @@ play.filters.enabled.1000 = com.github.rmannibucau.playx.servlet.servlet.api.Ser
 IMPORTANT: the number at the end is the position of the filter in the list, it is highly recommanded to put it last since it acts as an endpoint
 and must stay after security filters when in use, if you use a custom `DefaultFilters` ensure it is at the last position.
 
+=== Known limitations
+
+1. No filter support (yet)
+2. No WebListener support (yet)
+3. HandlesTypes is not supported yet
+
 === Configuration
 
 [source,config]
@@ -81,17 +87,29 @@ and must stay after security filters when in use, if you use a custom `DefaultFi
 playx {
   servlet {
     context = "" // the servlet context to use, default is root
-  }
 
-  executor { // configure the pool used for the servlet operation
-    default = true // will use ForkJoin.commonPool() if true else will use next config block
+    executor { // configure the pool used for the servlet operation
+      default = true // will use ForkJoin.commonPool() if true else will use next config block
 
-    core = 64 // when default = false it is the core size of the pool
-    max = 128 // when default = false it is the max size of the pool
-    keepAlive { // how long a thread is kept idle in the pool
+      core = 64 // when default = false it is the core size of the pool
+      max = 128 // when default = false it is the max size of the pool
+      keepAlive { // how long a thread is kept idle in the pool
         value = 60
         unit = SECONDS
+      }
     }
+
+    servlets = [
+      {
+        name: "my-servlet",
+        className: "my.ServletImpl",
+        asyncSupported: true,
+        loadOnStartup: 1,
+        initParameters: [
+          { name: "the key", value: "the value" }
+        ]
+      }
+    ]
   }
 }
 ----
@@ -153,12 +171,21 @@ or just as a contextual CDI (i.e. not linked to play IoC but embedded in play).
 IMPORTANT: the play IoC model being very tight to Guice due its module definition which is not supported yet
 in CDI integration, you can need to define some play beans to use it as the main and unique loader for your application.
 
+This module doesn't provide any CDI API not implementation to let you plug the one you prefer (Apache OpenWebBeans is recommanded
+since default setup is done for play but Weld works too). The dependency to add is the CDI SE module (`openwebbeans-se` for instance).
+
+WARNING: since generally applications rely on a Guice version of the play JSR-330 integration and since CDI scanning works great without
+that boilerplate, there is not yet a conversion of modules. However if you are interested in supporting
+`play.modules.enabled` you can write a custom CDI extension to do it.
+
 === Configuration
 
 Check out the `javax.enterprise.inject.se.SeContainerInitializer` API for the meaning of each configuration entry.
 
 [source,config]
 ----
+play.application.loader = com.github.rmannibucau.playx.cdi.CdiLoader
+
 playx {
   cdi {
     // same as play.allowGlobalApplication but for this IoC
@@ -166,6 +193,17 @@ playx {
 
     beans { // should default play bean be added to CDI context
       default = true
+
+      // provides a way to register custom beans, useful for not scanned modules
+      customs = [
+        // only className is mandatory
+        {
+          className: org.foo.MyBean,
+          scope: "javax.enterprise.context.Dependent",
+          id: "custom.org.foo.MyBean",
+          transitiveTypeClosure: false
+        }
+      ]
     }
 
     container { // all is optional

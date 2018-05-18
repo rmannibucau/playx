@@ -4,6 +4,8 @@ import static java.util.Collections.emptyEnumeration;
 import static java.util.Collections.emptyMap;
 import static java.util.Collections.emptySet;
 import static java.util.Comparator.comparing;
+import static java.util.Objects.requireNonNull;
+import static java.util.Optional.ofNullable;
 import static java.util.function.Function.identity;
 import static java.util.stream.Collectors.toMap;
 
@@ -15,10 +17,12 @@ import java.nio.charset.StandardCharsets;
 import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Enumeration;
 import java.util.EventListener;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -32,8 +36,6 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiFunction;
-import java.util.logging.Level;
-import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -54,13 +56,20 @@ import javax.servlet.annotation.HandlesTypes;
 import javax.servlet.descriptor.JspConfigDescriptor;
 import javax.servlet.http.HttpServletResponse;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.github.rmannibucau.playx.servlet.servlet.internal.AsyncContextImpl;
 import com.github.rmannibucau.playx.servlet.servlet.internal.DynamicServlet;
 import com.github.rmannibucau.playx.servlet.servlet.internal.RequestAdapter;
 import com.github.rmannibucau.playx.servlet.servlet.internal.RequestDispatcherImpl;
 import com.github.rmannibucau.playx.servlet.servlet.internal.ResponseAdapter;
 import com.typesafe.config.Config;
+import com.typesafe.config.ConfigList;
+import com.typesafe.config.ConfigObject;
+import com.typesafe.config.ConfigValueType;
 
+import play.Environment;
 import play.api.inject.ApplicationLifecycle;
 import play.api.inject.Injector;
 import play.http.HttpEntity;
@@ -70,7 +79,7 @@ import play.mvc.Result;
 @Singleton
 public class PlayServletContext implements ServletContext {
 
-    private static final Logger LOGGER = Logger.getLogger(PlayServletContext.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(PlayServletContext.class.getName());
 
     private final Injector injector;
 
@@ -89,13 +98,13 @@ public class PlayServletContext implements ServletContext {
             final Provider<Collection<ServletContainerInitializer>> initializersProvider, final Config config) {
         this.injector = injector;
         this.contextPath = safeConfigAccess(config, "playx.servlet.context", Config::getString).orElse("");
-        if (safeConfigAccess(config, "playx.executor.default", Config::getBoolean).orElse(true)) {
+        if (safeConfigAccess(config, "playx.servlet.executor.default", Config::getBoolean).orElse(true)) {
             executor = ForkJoinPool.commonPool();
         } else {
-            final int core = safeConfigAccess(config, "playx.executor.core", Config::getInt).orElse(64);
-            final int max = safeConfigAccess(config, "playx.executor.max", Config::getInt).orElse(512);
-            final int keepAlive = safeConfigAccess(config, "playx.executor.keepAlive.value", Config::getInt).orElse(60);
-            final TimeUnit keepAliveUnit = safeConfigAccess(config, "playx.executor.keepAlive.unit",
+            final int core = safeConfigAccess(config, "playx.servlet.executor.core", Config::getInt).orElse(64);
+            final int max = safeConfigAccess(config, "playx.servlet.executor.max", Config::getInt).orElse(512);
+            final int keepAlive = safeConfigAccess(config, "playx.servlet.executor.keepAlive.value", Config::getInt).orElse(60);
+            final TimeUnit keepAliveUnit = safeConfigAccess(config, "playx.servlet.executor.keepAlive.unit",
                     (c, k) -> c.getEnum(TimeUnit.class, k)).orElse(TimeUnit.SECONDS);
             executor = new ThreadPoolExecutor(core, max, keepAlive, keepAliveUnit, new LinkedBlockingQueue<>(),
                     new ThreadFactory() {
@@ -125,10 +134,53 @@ public class PlayServletContext implements ServletContext {
                 }
             });
         } catch (final RuntimeException re) {
-            return; // nothing to init
+            // no-op
         }
 
         lifecycle.addStopHook(() -> CompletableFuture.runAsync(this::stop, getDefaultExecutor()));
+
+        safeConfigAccess(config, "playx.servlet.servlets", Config::getObjectList).ifPresent(servlets -> {
+            servlets.forEach(servlet -> {
+                final String clazz = requireNonNull(servlet.get("className").unwrapped().toString(),
+                        "className must be provided: " + servlet);
+                final String name = ofNullable(servlet.get("name")).map(c -> c.unwrapped().toString()).orElse(clazz);
+                final boolean asyncSupported = ofNullable(servlet.get("asyncSupported"))
+                        .filter(c -> c.valueType() == ConfigValueType.BOOLEAN).map(c -> Boolean.class.cast(c.unwrapped()))
+                        .orElse(false);
+                final int loadOnStartup = ofNullable(servlet.get("loadOnStartup"))
+                        .filter(c -> c.valueType() == ConfigValueType.NUMBER)
+                        .map(c -> Number.class.cast(c.unwrapped()).intValue()).orElse(0);
+                final Map<String, String> initParams = ofNullable(servlet.get("initParameters"))
+                        .filter(c -> c.valueType() == ConfigValueType.LIST).map(
+                                list -> ConfigList.class.cast(list).stream()
+                                        .filter(it -> it.valueType() == ConfigValueType.OBJECT).map(ConfigObject.class::cast)
+                                        .collect(toMap(obj -> obj.get("name").unwrapped().toString(),
+                                                obj -> obj.get("value").unwrapped().toString())))
+                        .orElseGet(Collections::emptyMap);
+                final String[] mappings = ofNullable(servlet.get("mappings")).filter(c -> c.valueType() == ConfigValueType.LIST)
+                        .map(list -> ConfigList.class.cast(list).stream().map(c -> c.unwrapped().toString())
+                                .toArray(String[]::new))
+                        .orElseGet(() -> new String[0]);
+
+                final ClassLoader classLoader = getClassLoader();
+                final Class<? extends Servlet> loadedClass;
+                try {
+                    loadedClass = (Class<? extends Servlet>) classLoader.loadClass(clazz.trim());
+                } catch (final ClassNotFoundException e) {
+                    throw new IllegalArgumentException(e);
+                }
+
+                final ServletRegistration.Dynamic dynamic = addServlet(name, loadedClass);
+                dynamic.setLoadOnStartup(loadOnStartup);
+                dynamic.addMapping(mappings);
+                initParams.forEach(dynamic::setInitParameter);
+                if (asyncSupported) {
+                    dynamic.setAsyncSupported(true);
+                } else {
+                    LOGGER.info("Servlet {} is not set with asyncSupported=true", name);
+                }
+            });
+        });
 
         // we load them all anyway here, no lazy handling for now
         this.servlets.sort(comparing(DynamicServlet::getLoadOnStartup));
@@ -158,7 +210,7 @@ public class PlayServletContext implements ServletContext {
     }
 
     // kept as an extension point if needed to not be linked to a particular IoC here
-    protected Class<?>[] findClasses(final Class<?> k) {
+    protected Class<?>[] findClasses(final Class<?> k) { // TODO
         return new Class<?>[0];
     }
 
@@ -166,15 +218,11 @@ public class PlayServletContext implements ServletContext {
         servlets.stream().sorted(comparing(DynamicServlet::getLoadOnStartup).reversed()).forEach(s -> s.getInstance().destroy());
     }
 
-    CompletionStage<Result> invoke(final Http.RequestHeader requestHeader, final InputStream stream) {
-        return findMatchingServlet(requestHeader).map(servlet -> executeInvoke(servlet, requestHeader, stream))
-                .orElseGet(() -> CompletableFuture.completedFuture(new Result(HttpServletResponse.SC_NOT_FOUND)));
-    }
-
-    private CompletionStage<Result> executeInvoke(final DynamicServlet servlet, final Http.RequestHeader requestHeader,
-            final InputStream stream) {
-        final ResponseAdapter response = new ResponseAdapter(requestHeader.uri(), this);
-        final RequestAdapter request = new RequestAdapter(requestHeader, stream, response, injector, this, servlet);
+    public CompletionStage<Result> executeInvoke(final DynamicServlet servlet, final Http.RequestHeader requestHeader,
+            final InputStream stream, final String servletPath) {
+        final ResponseAdapter response = new ResponseAdapter(
+                (requestHeader.secure() ? "https" : "http") + "://" + requestHeader.host() + requestHeader.uri(), this);
+        final RequestAdapter request = new RequestAdapter(requestHeader, stream, response, injector, this, servlet, servletPath);
         request.setAttribute(ResponseAdapter.class.getName(), response);
         if (!servlet.isAsyncSupported()) {
             return CompletableFuture.supplyAsync(() -> doExecute(servlet, response, request), getDefaultExecutor())
@@ -204,7 +252,7 @@ public class PlayServletContext implements ServletContext {
     }
 
     // todo: replace by servlet chain with filters
-    private Optional<DynamicServlet> findMatchingServlet(final Http.RequestHeader requestHeader) {
+    public Optional<ServletMatching> findMatchingServlet(final Http.RequestHeader requestHeader) {
         final URI uri = URI.create(requestHeader.uri());
         final String path = uri.getPath();
         if (!path.startsWith(getContextPath())) {
@@ -213,21 +261,35 @@ public class PlayServletContext implements ServletContext {
         return findFirstMatchingServlet(path);
     }
 
-    public Optional<DynamicServlet> findFirstMatchingServlet(final String path) {
+    public Optional<ServletMatching> findFirstMatchingServlet(final String path) {
         final String matching = path.substring(getContextPath().length());
-        return servlets.stream().filter(s -> s.getMappings().stream().anyMatch(mapping -> isMatching(mapping, matching)))
-                .findFirst();
+        return servlets.stream()
+                .map(servlet -> servlet.getMappings().stream().map(mapping -> findServletPath(mapping, matching))
+                        .filter(Objects::nonNull).findFirst().map(mapping -> new ServletMatching(servlet, mapping)))
+                .filter(Optional::isPresent).findFirst().flatMap(identity());
     }
 
-    // very light impl but should be enough here
-    private boolean isMatching(final String mapping, final String request) {
+    // very light impl but should be enough here - todo: pathinfo too
+    // see org.apache.catalina.mapper.Mapper#addWrapper() and internalMapWrapper()
+    private String findServletPath(final String mapping, final String request) {
         if (mapping.endsWith("/*")) {
-            return request.startsWith(mapping.substring(0, mapping.length() - 1));
+            final String path = mapping.substring(0, mapping.length() - 1);
+            if (request.startsWith(path)) {
+                return path;
+            }
+            return null;
         }
-        if (mapping.startsWith("*")) {
-            return request.endsWith(mapping.substring(1));
+        if (mapping.startsWith("*.")) {
+            final String extension = mapping.substring(1);
+            if (request.endsWith(extension)) {
+                return request;
+            }
+            return null;
         }
-        return mapping.equals(request);
+        if (mapping.equals(request) || "/".equals(mapping) /* default */) {
+            return mapping;
+        }
+        return null;
     }
 
     public Executor getDefaultExecutor() {
@@ -316,12 +378,12 @@ public class PlayServletContext implements ServletContext {
 
     @Override
     public void log(final Exception exception, final String msg) {
-        LOGGER.log(Level.SEVERE, msg, exception);
+        LOGGER.error(msg, exception);
     }
 
     @Override
     public void log(final String message, final Throwable throwable) {
-        LOGGER.log(Level.SEVERE, message, throwable);
+        LOGGER.error(message, throwable);
     }
 
     @Override
@@ -493,7 +555,7 @@ public class PlayServletContext implements ServletContext {
 
     @Override
     public ClassLoader getClassLoader() {
-        return Thread.currentThread().getContextClassLoader();
+        return injector.instanceOf(Environment.class).classLoader();
     }
 
     @Override
@@ -534,5 +596,25 @@ public class PlayServletContext implements ServletContext {
     @Override
     public void setResponseCharacterEncoding(final String encoding) {
         responseEncoding = encoding;
+    }
+
+    public static class ServletMatching {
+
+        private final DynamicServlet dynamicServlet;
+
+        private final String servletPath;
+
+        private ServletMatching(final DynamicServlet dynamicServlet, final String servletPath) {
+            this.dynamicServlet = dynamicServlet;
+            this.servletPath = servletPath;
+        }
+
+        public DynamicServlet getDynamicServlet() {
+            return dynamicServlet;
+        }
+
+        public String getServletPath() {
+            return servletPath;
+        }
     }
 }
