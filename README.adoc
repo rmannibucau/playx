@@ -31,7 +31,15 @@ public class ServletModule extends AbstractModule {
 }
 ----
 
-2. You can bind servlets to the context using a `ServletContainerInitializer` (see configuration for an alternate way to bind servlets):
+2. You can bind servlets to the context using a `ServletContainerInitializer` or directly defining servlets. To use an initializer,
+register it through the related config entry;:
+
+[source,config]
+----
+playx.servlet.initializers += org.app.MyInitializer
+----
+
+An implementation can look like:
 
 [source,java]
 ----
@@ -54,14 +62,6 @@ public class Setup implements ServletContainerInitializer {
         }
     }
 }
-----
-
-You can create multiple initializers and must bind them as a collection in the IoC, for guice it can look like:
-
-[source,java]
-----
-bind(new TypeLiteral<Collection<ServletContainerInitializer>>() {})
-    .toInstance(singleton(new Setup()));
 ----
 
 3. Bind the `ServletFilter` in your configuration, this is the one responsible to route the requests to the servlet context when relevant (depending the mapping):
@@ -98,6 +98,10 @@ playx {
         unit = SECONDS
       }
     }
+
+    initializers = [
+      org.app.Initializer
+    ]
 
     servlets = [
       {

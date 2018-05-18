@@ -9,6 +9,13 @@ import static java.util.Optional.ofNullable;
 import static java.util.function.Function.identity;
 import static java.util.stream.Collectors.toMap;
 
+import play.Environment;
+import play.api.inject.ApplicationLifecycle;
+import play.api.inject.Injector;
+import play.http.HttpEntity;
+import play.mvc.Http;
+import play.mvc.Result;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -16,7 +23,6 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.AbstractMap;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.EventListener;
@@ -40,7 +46,6 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import javax.inject.Inject;
-import javax.inject.Provider;
 import javax.inject.Singleton;
 import javax.servlet.Filter;
 import javax.servlet.FilterRegistration;
@@ -56,9 +61,6 @@ import javax.servlet.annotation.HandlesTypes;
 import javax.servlet.descriptor.JspConfigDescriptor;
 import javax.servlet.http.HttpServletResponse;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import com.github.rmannibucau.playx.servlet.servlet.internal.AsyncContextImpl;
 import com.github.rmannibucau.playx.servlet.servlet.internal.DynamicServlet;
 import com.github.rmannibucau.playx.servlet.servlet.internal.RequestAdapter;
@@ -69,12 +71,8 @@ import com.typesafe.config.ConfigList;
 import com.typesafe.config.ConfigObject;
 import com.typesafe.config.ConfigValueType;
 
-import play.Environment;
-import play.api.inject.ApplicationLifecycle;
-import play.api.inject.Injector;
-import play.http.HttpEntity;
-import play.mvc.Http;
-import play.mvc.Result;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @Singleton
 public class PlayServletContext implements ServletContext {
@@ -94,8 +92,7 @@ public class PlayServletContext implements ServletContext {
     private String responseEncoding = StandardCharsets.ISO_8859_1.name();
 
     @Inject
-    public PlayServletContext(final ApplicationLifecycle lifecycle, final Injector injector,
-            final Provider<Collection<ServletContainerInitializer>> initializersProvider, final Config config) {
+    public PlayServletContext(final ApplicationLifecycle lifecycle, final Injector injector, final Config config) {
         this.injector = injector;
         this.contextPath = safeConfigAccess(config, "playx.servlet.context", Config::getString).orElse("");
         if (safeConfigAccess(config, "playx.servlet.executor.default", Config::getBoolean).orElse(true)) {
@@ -124,20 +121,21 @@ public class PlayServletContext implements ServletContext {
                     () -> CompletableFuture.runAsync(() -> ExecutorService.class.cast(executor).shutdownNow(), Runnable::run));
         }
 
-        try {
-            final Collection<ServletContainerInitializer> initializers = initializersProvider.get();
-            initializers.forEach(i -> {
-                try {
-                    i.onStartup(findClasses(i), PlayServletContext.this);
-                } catch (final ServletException e) {
-                    throw new IllegalStateException(e);
-                }
-            });
-        } catch (final RuntimeException re) {
-            // no-op
-        }
-
         lifecycle.addStopHook(() -> CompletableFuture.runAsync(this::stop, getDefaultExecutor()));
+
+        safeConfigAccess(config, "playx.servlet.initializers", Config::getStringList)
+                .ifPresent(clazz -> clazz.forEach(init -> {
+                    final ClassLoader classLoader = getClassLoader();
+                    try {
+                        final Class<? extends ServletContainerInitializer> initializer =
+                                (Class<? extends ServletContainerInitializer>) classLoader.loadClass(init.trim());
+                        final ServletContainerInitializer instances = initializer.getConstructor()
+                                .newInstance();
+                        instances.onStartup(findClasses(instances), PlayServletContext.this);
+                    } catch (final Exception e) {
+                        throw new IllegalArgumentException(e);
+                    }
+                }));
 
         safeConfigAccess(config, "playx.servlet.servlets", Config::getObjectList).ifPresent(servlets -> {
             servlets.forEach(servlet -> {
@@ -454,7 +452,7 @@ public class PlayServletContext implements ServletContext {
 
     @Override
     public ServletRegistration.Dynamic addServlet(final String servletName, final Class<? extends Servlet> servletClass) {
-        return addServlet(servletName, injector.instanceOf(servletClass));
+        return addServlet(servletName, createServlet(servletClass));
     }
 
     @Override
@@ -464,7 +462,7 @@ public class PlayServletContext implements ServletContext {
 
     @Override
     public <T extends Servlet> T createServlet(final Class<T> c) {
-        return injector.instanceOf(c);
+        return newInstance(c);
     }
 
     @Override
@@ -495,7 +493,7 @@ public class PlayServletContext implements ServletContext {
 
     @Override
     public <T extends Filter> T createFilter(final Class<T> c) {
-        return injector.instanceOf(c);
+        return newInstance(c);
     }
 
     @Override
@@ -596,6 +594,20 @@ public class PlayServletContext implements ServletContext {
     @Override
     public void setResponseCharacterEncoding(final String encoding) {
         responseEncoding = encoding;
+    }
+
+    // todo: add a flag to ask to skip IoC?
+    private <T> T newInstance(final Class<T> c) {
+        try {
+            return injector.instanceOf(c);
+        } catch (final RuntimeException re) {
+            try {
+                return c.getConstructor().newInstance();
+            } catch (final Exception e) {
+                re.addSuppressed(e);
+                throw re;
+            }
+        }
     }
 
     public static class ServletMatching {

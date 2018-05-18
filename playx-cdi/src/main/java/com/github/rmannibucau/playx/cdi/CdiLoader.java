@@ -1,48 +1,11 @@
 package com.github.rmannibucau.playx.cdi;
 
 import static java.util.Collections.emptyMap;
+import static java.util.Collections.list;
 import static java.util.Objects.requireNonNull;
+import static java.util.Optional.of;
 import static java.util.Optional.ofNullable;
 import static java.util.stream.Collectors.toList;
-
-import java.io.File;
-import java.io.InputStream;
-import java.lang.annotation.Annotation;
-import java.net.URL;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Executor;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BiFunction;
-import java.util.function.Function;
-import java.util.function.Supplier;
-import java.util.stream.Stream;
-
-import javax.enterprise.context.ApplicationScoped;
-import javax.enterprise.context.Dependent;
-import javax.enterprise.event.Observes;
-import javax.enterprise.inject.Any;
-import javax.enterprise.inject.Default;
-import javax.enterprise.inject.se.SeContainer;
-import javax.enterprise.inject.se.SeContainerInitializer;
-import javax.enterprise.inject.spi.AfterBeanDiscovery;
-import javax.enterprise.inject.spi.AnnotatedType;
-import javax.enterprise.inject.spi.BeanManager;
-import javax.enterprise.inject.spi.BeforeBeanDiscovery;
-import javax.enterprise.inject.spi.Extension;
-import javax.enterprise.inject.spi.InjectionTarget;
-import javax.enterprise.inject.spi.configurator.BeanConfigurator;
-import javax.inject.Singleton;
-
-import org.slf4j.ILoggerFactory;
-import org.slf4j.LoggerFactory;
-
-import com.typesafe.config.Config;
-import com.typesafe.config.ConfigObject;
-import com.typesafe.config.ConfigValueType;
 
 import akka.actor.ActorSystem;
 import akka.stream.Materializer;
@@ -85,6 +48,7 @@ import play.api.mvc.DefaultCookieHeaderEncoding;
 import play.api.mvc.DefaultMessagesActionBuilderImpl;
 import play.api.mvc.DefaultMessagesControllerComponents;
 import play.api.mvc.DefaultPlayBodyParsers;
+import play.api.mvc.MessagesControllerComponents;
 import play.api.mvc.request.DefaultRequestFactory;
 import play.api.mvc.request.RequestFactory;
 import play.core.WebCommands;
@@ -111,6 +75,52 @@ import scala.concurrent.ExecutionContextExecutor;
 import scala.concurrent.Future;
 import scala.reflect.ClassTag;
 
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.lang.annotation.Annotation;
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Enumeration;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiFunction;
+import java.util.function.Function;
+import java.util.function.Supplier;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
+import java.util.stream.Stream;
+
+import javax.enterprise.context.ApplicationScoped;
+import javax.enterprise.context.Dependent;
+import javax.enterprise.event.Observes;
+import javax.enterprise.inject.Any;
+import javax.enterprise.inject.Default;
+import javax.enterprise.inject.se.SeContainer;
+import javax.enterprise.inject.se.SeContainerInitializer;
+import javax.enterprise.inject.spi.AfterBeanDiscovery;
+import javax.enterprise.inject.spi.AnnotatedType;
+import javax.enterprise.inject.spi.BeanManager;
+import javax.enterprise.inject.spi.BeforeBeanDiscovery;
+import javax.enterprise.inject.spi.Extension;
+import javax.enterprise.inject.spi.InjectionTarget;
+import javax.enterprise.inject.spi.ProcessBeanAttributes;
+import javax.enterprise.inject.spi.configurator.BeanConfigurator;
+import javax.inject.Singleton;
+
+import com.typesafe.config.Config;
+import com.typesafe.config.ConfigObject;
+import com.typesafe.config.ConfigValueType;
+
+import org.slf4j.ILoggerFactory;
+import org.slf4j.LoggerFactory;
+
 public class CdiLoader implements ApplicationLoader {
 
     final BiFunction<Context, String, Class<?>> classLoader = (context, className) -> {
@@ -125,10 +135,20 @@ public class CdiLoader implements ApplicationLoader {
     public Application load(final Context context) {
         final Config config = context.initialConfig();
         final Function<String, Package> packageLoader = s -> {
+            final ClassLoader loader = context.environment().classLoader();
+            final String trimmed = s.trim();
             try {
-                return context.environment().classLoader().loadClass(s.trim() + ".package-info.class").getPackage();
+                return loader.loadClass(trimmed + ".package-info.class").getPackage();
             } catch (final ClassNotFoundException e) {
-                throw new IllegalArgumentException(e);
+                return ofNullable(Package.getPackage(trimmed))
+                        .orElseGet(() -> of(trimmed)
+                                .map(name -> { // try to find a class - more relevant to load
+                                    return ofNullable(findPackageFromClassLoader(loader, name, true))
+                                            .orElseGet(() -> findPackageFromClassLoader(loader, name, false));
+                                })
+                                .map(c -> classLoader.apply(context, c))
+                                .map(Class::getPackage)
+                                .orElseThrow(() -> new IllegalArgumentException("can't find package: " + trimmed, e)));
             }
         };
 
@@ -145,10 +165,11 @@ public class CdiLoader implements ApplicationLoader {
                 final ConfigObject object = ConfigObject.class.cast(value);
                 final boolean recursive = safeConfigAccess(object.toConfig(), "recursive", Config::getBoolean).orElse(false);
                 final String pck = safeConfigAccess(object.toConfig(), "package", Config::getString)
-                        .orElseThrow(() -> new IllegalArgumentException("Missing package value in " + value));
-                initializer.addPackages(recursive, packageLoader.apply(pck.trim()));
+                        .orElseThrow(() -> new IllegalArgumentException("Missing package value in " + value))
+                        .trim();
+                initializer.addPackages(recursive, packageLoader.apply(pck));
             } else if (value.valueType() == ConfigValueType.STRING) {
-                initializer.addPackages(packageLoader.apply(value.render().trim()));
+                initializer.addPackages(packageLoader.apply(value.unwrapped().toString().trim()));
             } else {
                 throw new IllegalArgumentException("Unsupported configuration: " + value);
             }
@@ -175,9 +196,7 @@ public class CdiLoader implements ApplicationLoader {
         final CdiInjector injector = new CdiInjector();
         final Application application = new CdiApplication(injector, context);
 
-        if (safeConfigAccess(config, "playx.cdi.beans.defaults", Config::getBoolean).orElse(true)) {
-            addDefaultBeans(context, initializer, injector, application);
-        }
+        addProvidedBeans(context, initializer, injector, application);
 
         final SeContainer container = initializer.initialize();
         injector.container = container;
@@ -185,11 +204,40 @@ public class CdiLoader implements ApplicationLoader {
         return application;
     }
 
-    private void addDefaultBeans(final Context context, final SeContainerInitializer initializer, final Injector injector,
-            final Application application) {
-        final Config config = context.initialConfig();
-        final Configuration configuration = context.asScala().initialConfiguration();
+    private String findPackageFromClassLoader(final ClassLoader loader, final String name, final boolean strict) {
+        final String pck = name.replace(".", "/");
+        try {
+            final Enumeration<URL> urls = loader.getResources(pck);
+            while (urls.hasMoreElements()) {
+                final File next = toFile(urls.nextElement());
+                if (next != null && next.exists() && !next.isDirectory()) {
+                    try (final JarFile file = new JarFile(next)) {
+                        final Optional<JarEntry> clazz = list(file.entries()).stream()
+                                .filter(it -> {
+                                    final String eName = it.getName();
+                                    return eName.startsWith(pck + '/') &&
+                                            eName.endsWith(".class") &&
+                                            (!strict || eName.lastIndexOf('/', pck.length()) == pck.length());
+                                })
+                                .findFirst();
+                        if (clazz.isPresent()) {
+                            final String clasName = clazz.get().getName();
+                            return clasName.replace('/', '.').substring(0, clasName.length() - ".class".length());
+                        }
+                    }
+                }
+            }
+        } catch (final IOException e1) {
+            // no-op
+        }
+        return null;
+    }
+
+    private void addProvidedBeans(final Context context, final SeContainerInitializer initializer, final Injector injector,
+                                  final Application application) {
         final play.Environment environment = context.environment();
+        final Configuration configuration = Configuration.load(environment.asScala());
+        final Config config = configuration.underlying();
 
         initializer.addExtensions(new Extension() { // todo: make it more configured and modular reusing
 
@@ -203,21 +251,29 @@ public class CdiLoader implements ApplicationLoader {
                     // no-op
                 }
 
-                Stream.concat(Stream.of(Assets.class, Files.DefaultTemporaryFileCreator.class,
-                        Files.DefaultTemporaryFileReaper.class, DefaultPlayBodyParsers.class, BodyParsers.Default.class,
-                        DefaultActionBuilderImpl.class, DefaultControllerComponents.class, DefaultMessagesActionBuilderImpl.class,
-                        DefaultMessagesControllerComponents.class, DefaultFutures.class,
-                        play.api.libs.concurrent.DefaultFutures.class, HttpExecutionContext.class, DefaultAssetsMetadata.class),
-                        extensions.stream()).forEach(it -> event.addAnnotatedType(beanManager.createAnnotatedType(it)));
+                if (safeConfigAccess(context.initialConfig(), "playx.cdi.beans.defaults", Config::getBoolean).orElse(true)) {
+                    Stream.concat(Stream.of(Assets.class, Files.DefaultTemporaryFileCreator.class,
+                            Files.DefaultTemporaryFileReaper.class, DefaultPlayBodyParsers.class, BodyParsers.Default.class,
+                            DefaultActionBuilderImpl.class, DefaultControllerComponents.class, DefaultMessagesActionBuilderImpl.class,
+                            DefaultMessagesControllerComponents.class, DefaultFutures.class,
+                            play.api.libs.concurrent.DefaultFutures.class, HttpExecutionContext.class, DefaultAssetsMetadata.class),
+                            extensions.stream()).forEach(it -> event.addAnnotatedType(beanManager.createAnnotatedType(it)));
+                }
+            }
+
+            void restrictTypesForDefaultMessagesControllerComponents(@Observes final ProcessBeanAttributes<DefaultMessagesControllerComponents> pba) {
+                pba.configureBeanAttributes().types(MessagesControllerComponents.class, Object.class);
             }
 
             void addProvidedBeans(@Observes final AfterBeanDiscovery event, final BeanManager beanManager) {
-                addPlayBeans(event);
+                if (safeConfigAccess(context.initialConfig(), "playx.cdi.beans.defaults", Config::getBoolean).orElse(true)) {
+                    addPlayBeans(event);
+                }
                 addCustomBeans(event, beanManager);
             }
 
             private void addCustomBeans(final AfterBeanDiscovery event, final BeanManager beanManager) {
-                safeConfigAccess(config, "playx.cdi.beans.customs", Config::getObjectList)
+                safeConfigAccess(context.initialConfig(), "playx.cdi.beans.customs", Config::getObjectList)
                         .ifPresent(beans -> beans.forEach(bean -> {
                             final String className = requireNonNull(bean.get("className"), "className can't be null: " + bean)
                                     .unwrapped().toString();
@@ -227,17 +283,17 @@ public class CdiLoader implements ApplicationLoader {
                                     .orElse("javax.enterprise.context.Dependent");
                             final Class<? extends Annotation> scopeAnnotation;
                             switch (scope) {
-                            case "javax.enterprise.context.ApplicationScoped":
-                                scopeAnnotation = ApplicationScoped.class;
-                                break;
-                            case "javax.inject.Singleton":
-                                scopeAnnotation = Singleton.class;
-                                break;
-                            case "javax.enterprise.context.Dependent":
-                                scopeAnnotation = Dependent.class;
-                                break;
-                            default:
-                                scopeAnnotation = (Class<? extends Annotation>) classLoader.apply(context, scope);
+                                case "javax.enterprise.context.ApplicationScoped":
+                                    scopeAnnotation = ApplicationScoped.class;
+                                    break;
+                                case "javax.inject.Singleton":
+                                    scopeAnnotation = Singleton.class;
+                                    break;
+                                case "javax.enterprise.context.Dependent":
+                                    scopeAnnotation = Dependent.class;
+                                    break;
+                                default:
+                                    scopeAnnotation = (Class<? extends Annotation>) classLoader.apply(context, scope);
                             }
 
                             final BeanConfigurator<Object> configurator = event.addBean();
@@ -255,7 +311,7 @@ public class CdiLoader implements ApplicationLoader {
             }
 
             private <T> void addBeanLifecycle(final BeanManager beanManager, final Class<T> beanClass,
-                    final BeanConfigurator<T> configurator) {
+                                              final BeanConfigurator<T> configurator) {
                 final AnnotatedType<T> annotatedType = beanManager.createAnnotatedType(beanClass);
                 final InjectionTarget<T> injectionTarget = beanManager.createInjectionTarget(annotatedType);
 
@@ -299,7 +355,7 @@ public class CdiLoader implements ApplicationLoader {
                     public Router router() {
                         return router == null
                                 ? router = new JavaRouterAdapter(new RoutesProvider(injector.asScala(), environment.asScala(),
-                                        configuration, httpConfiguration()).get())
+                                configuration, httpConfiguration()).get())
                                 : router;
                     }
 
@@ -392,7 +448,7 @@ public class CdiLoader implements ApplicationLoader {
             }
 
             private <T> void addBean(final AfterBeanDiscovery event, final Supplier<T> instance, final Class<T> mainApi,
-                    final Class<?>... types) {
+                                     final Class<?>... types) {
                 event.addBean().id(toId(mainApi)).beanClass(Injector.class)
                         .types(Stream.concat(Stream.of(mainApi), Stream.concat(Stream.of(types), Stream.of(Object.class)))
                                 .toArray(Class[]::new))
@@ -408,7 +464,7 @@ public class CdiLoader implements ApplicationLoader {
     }
 
     private static <T> Optional<T> safeConfigAccess(final Config config, final String key,
-            final BiFunction<Config, String, T> extractor) {
+                                                    final BiFunction<Config, String, T> extractor) {
         if (config.hasPathOrNull(key) && !config.getIsNull(key)) {
             return Optional.of(extractor.apply(config, key));
         }
@@ -658,5 +714,71 @@ public class CdiLoader implements ApplicationLoader {
             }
             return val;
         }
+    }
+
+    private static File toFile(final URL url) {
+        if ("jar".equals(url.getProtocol())) {
+            try {
+                final String spec = url.getFile();
+                final int separator = spec.indexOf('!');
+                if (separator == -1) {
+                    return null;
+                }
+                return toFile(new URL(spec.substring(0, separator + 1)));
+            } catch (final MalformedURLException e) {
+                return null;
+            }
+        } else if ("file".equals(url.getProtocol())) {
+            String path = decode(url.getFile());
+            if (path.endsWith("!")) {
+                path = path.substring(0, path.length() - 1);
+            }
+            return new File(path);
+        }
+        return null;
+    }
+
+    private static String decode(final String fileName) {
+        if (fileName.indexOf('%') == -1) {
+            return fileName;
+        }
+
+        final StringBuilder result = new StringBuilder(fileName.length());
+        final ByteArrayOutputStream out = new ByteArrayOutputStream();
+
+        for (int i = 0; i < fileName.length(); ) {
+            final char c = fileName.charAt(i);
+
+            if (c == '%') {
+                out.reset();
+                do {
+                    if (i + 2 >= fileName.length()) {
+                        throw new IllegalArgumentException("Incomplete % sequence at: " + i);
+                    }
+
+                    final int d1 = Character.digit(fileName.charAt(i + 1), 16);
+                    final int d2 = Character.digit(fileName.charAt(i + 2), 16);
+
+                    if (d1 == -1 || d2 == -1) {
+                        throw new IllegalArgumentException("Invalid % sequence (" + fileName.substring(i, i + 3) + ") at: " + String.valueOf(i));
+                    }
+
+                    out.write((byte) ((d1 << 4) + d2));
+
+                    i += 3;
+
+                } while (i < fileName.length() && fileName.charAt(i) == '%');
+
+
+                result.append(out.toString());
+
+                continue;
+            } else {
+                result.append(c);
+            }
+
+            i++;
+        }
+        return result.toString();
     }
 }

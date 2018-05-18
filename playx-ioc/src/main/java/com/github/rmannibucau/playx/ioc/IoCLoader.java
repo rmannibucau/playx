@@ -5,20 +5,6 @@ import static java.util.function.Function.identity;
 import static java.util.stream.Collectors.toList;
 import static java.util.stream.Collectors.toMap;
 
-import java.io.File;
-import java.io.InputStream;
-import java.lang.reflect.InvocationTargetException;
-import java.net.URL;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.Optional;
-import java.util.function.BiFunction;
-
-import com.typesafe.config.Config;
-
 import akka.actor.ActorSystem;
 import akka.stream.Materializer;
 import play.Application;
@@ -36,6 +22,21 @@ import play.inject.Injector;
 import scala.Option;
 import scala.concurrent.Future;
 import scala.reflect.ClassTag;
+
+import java.io.File;
+import java.io.InputStream;
+import java.lang.reflect.InvocationTargetException;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.BiFunction;
+import java.util.function.Consumer;
+
+import com.typesafe.config.Config;
 
 public class IoCLoader implements ApplicationLoader {
 
@@ -68,7 +69,7 @@ public class IoCLoader implements ApplicationLoader {
     }
 
     private <T> Optional<T> safeConfigAccess(final Config config, final String key,
-            final BiFunction<Config, String, T> extractor) {
+                                             final BiFunction<Config, String, T> extractor) {
         if (config.hasPathOrNull(key) && !config.getIsNull(key)) {
             return Optional.of(extractor.apply(config, key));
         }
@@ -93,6 +94,20 @@ public class IoCLoader implements ApplicationLoader {
                     }, LinkedHashMap::new)), routing);
             this.scalaRef = delegates.iterator().next().asScala();
             this.java = new DefaultApplication(this, injector.asJava());
+
+            playxIntegration();
+        }
+
+        // Ensure our inter-IoC friendly components have the right injector,
+        // for that the component supports to replace itself by a provided copy.
+        // In practise we force to go through the injector facade to have the right instance.
+        private void playxIntegration() {
+            try {
+                final Class<?> clazz = classloader().loadClass("com.github.rmannibucau.playx.servlet.servlet.api.ServletFilter");
+                Consumer.class.cast(this.injector.instanceOf(clazz)).accept(injector.instanceOf(clazz));
+            } catch (final ClassNotFoundException | NoClassDefFoundError ex) {
+                // no-op
+            }
         }
 
         @Override

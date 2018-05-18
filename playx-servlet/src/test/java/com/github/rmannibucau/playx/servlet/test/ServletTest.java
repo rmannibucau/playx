@@ -1,10 +1,14 @@
 package com.github.rmannibucau.playx.servlet.test;
 
+import static java.util.Collections.singletonList;
 import static java.util.stream.Collectors.joining;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 import static play.test.Helpers.running;
 import static play.test.Helpers.testServer;
+
+import play.inject.guice.GuiceApplicationBuilder;
+import play.test.TestServer;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -12,16 +16,13 @@ import java.io.InputStreamReader;
 import java.net.URL;
 import java.util.concurrent.atomic.AtomicReference;
 
+import com.github.rmannibucau.playx.servlet.servlet.api.ServletFilter;
+import com.github.rmannibucau.playx.servlet.setup.ServletSetup;
+
 import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.rules.TestRule;
 import org.junit.runners.model.Statement;
-
-import com.github.rmannibucau.playx.servlet.servlet.api.ServletFilter;
-import com.github.rmannibucau.playx.servlet.setup.ServletModule;
-
-import play.inject.guice.GuiceApplicationBuilder;
-import play.test.TestServer;
 
 public class ServletTest {
 
@@ -32,7 +33,8 @@ public class ServletTest {
 
         @Override
         public void evaluate() throws Throwable {
-            server = testServer(new GuiceApplicationBuilder().bindings(new ServletModule())
+            server = testServer(new GuiceApplicationBuilder()
+                    .configure("playx.servlet.initializers", singletonList(ServletSetup.class.getName()))
                     .configure("play.filters.enabled.100", ServletFilter.class.getName()).build());
             final AtomicReference<Throwable> error = new AtomicReference<>();
             try {
