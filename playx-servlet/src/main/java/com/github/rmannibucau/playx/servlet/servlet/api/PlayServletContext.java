@@ -35,7 +35,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -95,31 +94,28 @@ public class PlayServletContext implements ServletContext {
     public PlayServletContext(final ApplicationLifecycle lifecycle, final Injector injector, final Config config) {
         this.injector = injector;
         this.contextPath = safeConfigAccess(config, "playx.servlet.context", Config::getString).orElse("");
-        if (safeConfigAccess(config, "playx.servlet.executor.default", Config::getBoolean).orElse(true)) {
-            executor = ForkJoinPool.commonPool();
-        } else {
-            final int core = safeConfigAccess(config, "playx.servlet.executor.core", Config::getInt).orElse(64);
-            final int max = safeConfigAccess(config, "playx.servlet.executor.max", Config::getInt).orElse(512);
-            final int keepAlive = safeConfigAccess(config, "playx.servlet.executor.keepAlive.value", Config::getInt).orElse(60);
-            final TimeUnit keepAliveUnit = safeConfigAccess(config, "playx.servlet.executor.keepAlive.unit",
-                    (c, k) -> c.getEnum(TimeUnit.class, k)).orElse(TimeUnit.SECONDS);
-            executor = new ThreadPoolExecutor(core, max, keepAlive, keepAliveUnit, new LinkedBlockingQueue<>(),
-                    new ThreadFactory() {
 
-                        private final AtomicInteger counter = new AtomicInteger();
+        final int core = safeConfigAccess(config, "playx.servlet.executor.core", Config::getInt).orElse(64);
+        final int max = safeConfigAccess(config, "playx.servlet.executor.max", Config::getInt).orElse(512);
+        final int keepAlive = safeConfigAccess(config, "playx.servlet.executor.keepAlive.value", Config::getInt).orElse(60);
+        final TimeUnit keepAliveUnit = safeConfigAccess(config, "playx.servlet.executor.keepAlive.unit",
+                (c, k) -> c.getEnum(TimeUnit.class, k)).orElse(TimeUnit.SECONDS);
+        executor = new ThreadPoolExecutor(core, max, keepAlive, keepAliveUnit, new LinkedBlockingQueue<>(),
+                new ThreadFactory() {
 
-                        @Override
-                        public Thread newThread(final Runnable r) {
-                            final Thread thread = new Thread(r);
-                            thread.setDaemon(false);
-                            thread.setPriority(Thread.NORM_PRIORITY);
-                            thread.setName("playx-[context=" + contextPath + "]-" + counter.incrementAndGet());
-                            return thread;
-                        }
-                    });
-            lifecycle.addStopHook(
-                    () -> CompletableFuture.runAsync(() -> ExecutorService.class.cast(executor).shutdownNow(), Runnable::run));
-        }
+                    private final AtomicInteger counter = new AtomicInteger();
+
+                    @Override
+                    public Thread newThread(final Runnable r) {
+                        final Thread thread = new Thread(r);
+                        thread.setDaemon(false);
+                        thread.setPriority(Thread.NORM_PRIORITY);
+                        thread.setName("playx-servlet-[context=" + contextPath + "]-" + counter.incrementAndGet());
+                        return thread;
+                    }
+                });
+        lifecycle.addStopHook(
+                () -> CompletableFuture.runAsync(() -> ExecutorService.class.cast(executor).shutdownNow(), Runnable::run));
 
         lifecycle.addStopHook(() -> CompletableFuture.runAsync(this::stop, getDefaultExecutor()));
 
@@ -218,15 +214,22 @@ public class PlayServletContext implements ServletContext {
 
     public CompletionStage<Result> executeInvoke(final DynamicServlet servlet, final Http.RequestHeader requestHeader,
             final InputStream stream, final String servletPath) {
-        final ResponseAdapter response = new ResponseAdapter(
-                (requestHeader.secure() ? "https" : "http") + "://" + requestHeader.host() + requestHeader.uri(), this);
-        final RequestAdapter request = new RequestAdapter(requestHeader, stream, response, injector, this, servlet, servletPath);
-        request.setAttribute(ResponseAdapter.class.getName(), response);
-        if (!servlet.isAsyncSupported()) {
-            return CompletableFuture.supplyAsync(() -> doExecute(servlet, response, request), getDefaultExecutor())
-                    .thenCompose(identity());
+        final Thread thread = Thread.currentThread();
+        final ClassLoader contextClassLoader = thread.getContextClassLoader();
+        thread.setContextClassLoader(getClassLoader());
+        try {
+            final ResponseAdapter response = new ResponseAdapter(
+                    (requestHeader.secure() ? "https" : "http") + "://" + requestHeader.host() + requestHeader.uri(), this);
+            final RequestAdapter request = new RequestAdapter(requestHeader, stream, response, injector, this, servlet, servletPath);
+            request.setAttribute(ResponseAdapter.class.getName(), response);
+            if (!servlet.isAsyncSupported()) {
+                return CompletableFuture.supplyAsync(() -> doExecute(servlet, response, request), getDefaultExecutor())
+                        .thenCompose(identity());
+            }
+            return doExecute(servlet, response, request);
+        } finally {
+            thread.setContextClassLoader(contextClassLoader);
         }
-        return doExecute(servlet, response, request);
     }
 
     private CompletionStage<Result> doExecute(final DynamicServlet servlet, final ResponseAdapter response,
@@ -291,7 +294,7 @@ public class PlayServletContext implements ServletContext {
     }
 
     public Executor getDefaultExecutor() {
-        return executor == null ? ForkJoinPool.commonPool() : executor;
+        return executor;
     }
 
     @Override

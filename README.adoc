@@ -89,8 +89,6 @@ playx {
     context = "" // the servlet context to use, default is root
 
     executor { // configure the pool used for the servlet operation
-      default = true // will use ForkJoin.commonPool() if true else will use next config block
-
       core = 64 // when default = false it is the core size of the pool
       max = 128 // when default = false it is the max size of the pool
       keepAlive { // how long a thread is kept idle in the pool

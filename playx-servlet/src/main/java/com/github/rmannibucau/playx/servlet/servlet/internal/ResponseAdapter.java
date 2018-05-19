@@ -83,6 +83,7 @@ public class ResponseAdapter implements HttpServletResponse {
         } catch (final IOException e) {
             // no-op
         }
+        headers.remove("Content-Type");
         completion.complete(new Result(status, headers,
                 new HttpEntity.Strict(ByteString.fromArray(output.toByteArray()), ofNullable(getContentType()))));
     }

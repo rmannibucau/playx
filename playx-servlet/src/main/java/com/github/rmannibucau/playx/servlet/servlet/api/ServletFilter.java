@@ -20,7 +20,6 @@ import javax.inject.Singleton;
 @Singleton
 public class ServletFilter extends EssentialFilter implements Consumer<ServletFilter> {
     private Injector injector;
-    private ServletFilter self;
     private final State state = new State();
 
     @Inject
