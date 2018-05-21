@@ -2,10 +2,12 @@ package com.github.rmannibucau.playx.cdi;
 
 import static java.util.Collections.emptyMap;
 import static java.util.Collections.list;
+import static java.util.Collections.singletonList;
 import static java.util.Objects.requireNonNull;
 import static java.util.Optional.of;
 import static java.util.Optional.ofNullable;
 import static java.util.stream.Collectors.toList;
+import static java.util.stream.Collectors.toSet;
 
 import akka.actor.ActorSystem;
 import akka.stream.Materializer;
@@ -85,13 +87,14 @@ import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Enumeration;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
-import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
@@ -134,20 +137,20 @@ public class CdiLoader implements ApplicationLoader {
     @Override
     public Application load(final Context context) {
         final Config config = context.initialConfig();
-        final Function<String, Package> packageLoader = s -> {
+        final BiFunction<Boolean, String, Stream<Package>> packageLoader = (recursive, pckName) -> {
             final ClassLoader loader = context.environment().classLoader();
-            final String trimmed = s.trim();
+            final String trimmed = pckName.trim();
             try {
-                return loader.loadClass(trimmed + ".package-info.class").getPackage();
+                return Stream.of(loader.loadClass(trimmed + ".package-info.class").getPackage());
             } catch (final ClassNotFoundException e) {
                 return ofNullable(Package.getPackage(trimmed))
+                        .map(Stream::of)
                         .orElseGet(() -> of(trimmed)
                                 .map(name -> { // try to find a class - more relevant to load
-                                    return ofNullable(findPackageFromClassLoader(loader, name, true))
-                                            .orElseGet(() -> findPackageFromClassLoader(loader, name, false));
+                                    return findPackageFromClassLoader(loader, name, recursive).stream()
+                                            .map(it -> classLoader.apply(context, it))
+                                            .map(Class::getPackage);
                                 })
-                                .map(c -> classLoader.apply(context, c))
-                                .map(Class::getPackage)
                                 .orElseThrow(() -> new IllegalArgumentException("can't find package: " + trimmed, e)));
             }
         };
@@ -167,9 +170,9 @@ public class CdiLoader implements ApplicationLoader {
                 final String pck = safeConfigAccess(object.toConfig(), "package", Config::getString)
                         .orElseThrow(() -> new IllegalArgumentException("Missing package value in " + value))
                         .trim();
-                initializer.addPackages(recursive, packageLoader.apply(pck));
+                packageLoader.apply(recursive, pck).forEach(pckIt -> initializer.addPackages(recursive, pckIt));
             } else if (value.valueType() == ConfigValueType.STRING) {
-                initializer.addPackages(packageLoader.apply(value.unwrapped().toString().trim()));
+                packageLoader.apply(false, value.unwrapped().toString().trim()).forEach(initializer::addPackages);
             } else {
                 throw new IllegalArgumentException("Unsupported configuration: " + value);
             }
@@ -204,7 +207,7 @@ public class CdiLoader implements ApplicationLoader {
         return application;
     }
 
-    private String findPackageFromClassLoader(final ClassLoader loader, final String name, final boolean strict) {
+    private Collection<String> findPackageFromClassLoader(final ClassLoader loader, final String name, final boolean recursive) {
         final String pck = name.replace(".", "/");
         try {
             final Enumeration<URL> urls = loader.getResources(pck);
@@ -212,18 +215,38 @@ public class CdiLoader implements ApplicationLoader {
                 final File next = toFile(urls.nextElement());
                 if (next != null && next.exists() && !next.isDirectory()) {
                     try (final JarFile file = new JarFile(next)) {
-                        final Optional<JarEntry> clazz = list(file.entries()).stream()
+                        final Collection<JarEntry> entries = list(file.entries());
+                        final Set<String> packages = new HashSet<>();
+                        final List<String> classes = entries.stream()
                                 .filter(it -> {
                                     final String eName = it.getName();
-                                    return eName.startsWith(pck + '/') &&
-                                            eName.endsWith(".class") &&
-                                            (!strict || eName.lastIndexOf('/', pck.length()) == pck.length());
+                                    return eName.startsWith(pck + '/') && eName.endsWith(".class") &&
+                                            (recursive || eName.lastIndexOf('/', pck.length()) == pck.length());
                                 })
-                                .findFirst();
-                        if (clazz.isPresent()) {
-                            final String clasName = clazz.get().getName();
-                            return clasName.replace('/', '.').substring(0, clasName.length() - ".class".length());
+                                .map(JarEntry::getName)
+                                .map(clazz -> clazz.replace('/', '.').substring(0, clazz.length() - ".class".length()))
+                                .filter(s -> {
+                                    final String sPck = s.substring(0, s.lastIndexOf('.'));
+                                    return packages.add(sPck);
+                                })
+                                .sorted()
+                                .collect(toList());
+                        if (name.equals(classes.get(0).substring(0, classes.get(0).lastIndexOf('.')))) {
+                            return singletonList(classes.iterator().next());
                         }
+                        // here we don't have any class in the root package so need to list them all
+                        final Collection<String> pcks = classes.stream()
+                                .map(clazz -> clazz.replace('/', '.').substring(0, clazz.length() - ".class".length()))
+                                .collect(toSet());
+                        final Collection<String> toDrop = new ArrayList<>();
+                        for (final String c : pcks) {
+                            if (pcks.stream().anyMatch(it -> !it.equals(c) && c.startsWith(it))) {
+                                toDrop.add(c);
+                            }
+                        }
+                        return classes.stream()
+                                .filter(it -> toDrop.stream().anyMatch(it::startsWith))
+                                .collect(toList());
                     }
                 }
             }
