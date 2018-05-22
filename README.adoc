@@ -258,3 +258,44 @@ playx {
 }
 ----
 
+== Microprofile Config
+
+[source,xml]
+----
+<dependency>
+    <groupId>com.github.rmannibucau</groupId>
+    <artifactId>playx-microprofile-config</artifactId>
+    <version>${playx.version}</version>
+</dependency>
+----
+
+This module adds a Microprofile Configuration `ConfigSource` using CDI to look up a typesafe `Config`
+to get configurations. It support primitives, objects and list of primitives (but not list of object)
+and flatten the configuration keys.
+
+For instance:
+
+[source,config]
+----
+app {
+  service {
+    url = "http://remote"
+  }
+}
+----
+
+Will provide the following configurations:
+
+[source,properties]
+----
+app.service.url = http://remote
+----
+
+So you can use it through:
+
+[source,java]
+----
+@Inject
+@ConfigProperty(name = "app.service.url")
+private String url;
+----

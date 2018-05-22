@@ -22,6 +22,7 @@
     <module>playx-ioc</module>
     <module>playx-cdi</module>
     <module>demo</module>
+    <module>playx-microprofile-config</module>
   </modules>
 
   <dependencyManagement>
