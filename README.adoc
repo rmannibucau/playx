@@ -101,6 +101,21 @@ playx {
       org.app.Initializer
     ]
 
+    listeners = [
+      app.MyContextListener
+    ]
+
+    filters = [
+      {
+        name: "my-fitler",
+        className: "my.FilterImpl",
+        asyncSupported: true,
+        initParameters: [
+          { name: "the key", value: "the value" }
+        ]
+      }
+    ]
+
     servlets = [
       {
         name: "my-servlet",

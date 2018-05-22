@@ -41,7 +41,7 @@ public class ServletFilter extends EssentialFilter implements Consumer<ServletFi
                     return slurper.apply(requestHeader).mapFuture(
                             resultOrBytes -> resultOrBytes.left.map(CompletableFuture::completedFuture).orElseGet(() -> {
                                 return state.getServletContext()
-                                        .executeInvoke(servlet.getDynamicServlet(), requestHeader,
+                                        .executeInvoke(servlet, requestHeader,
                                                 resultOrBytes.right.get().iterator().asInputStream(), servlet.getServletPath())
                                         .toCompletableFuture();
                             }), state.getServletContext().getDefaultExecutor());

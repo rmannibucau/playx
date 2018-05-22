@@ -1,20 +1,15 @@
 package com.github.rmannibucau.playx.servlet.servlet.api;
 
 import static java.util.Collections.emptyEnumeration;
+import static java.util.Collections.emptyList;
 import static java.util.Collections.emptyMap;
 import static java.util.Collections.emptySet;
 import static java.util.Comparator.comparing;
 import static java.util.Objects.requireNonNull;
 import static java.util.Optional.ofNullable;
 import static java.util.function.Function.identity;
+import static java.util.stream.Collectors.toList;
 import static java.util.stream.Collectors.toMap;
-
-import play.Environment;
-import play.api.inject.ApplicationLifecycle;
-import play.api.inject.Injector;
-import play.http.HttpEntity;
-import play.mvc.Http;
-import play.mvc.Result;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -23,7 +18,9 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.AbstractMap;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.Enumeration;
 import java.util.EventListener;
 import java.util.List;
@@ -46,12 +43,15 @@ import java.util.stream.Stream;
 
 import javax.inject.Inject;
 import javax.inject.Singleton;
+import javax.servlet.DispatcherType;
 import javax.servlet.Filter;
 import javax.servlet.FilterRegistration;
 import javax.servlet.RequestDispatcher;
 import javax.servlet.Servlet;
 import javax.servlet.ServletContainerInitializer;
 import javax.servlet.ServletContext;
+import javax.servlet.ServletContextEvent;
+import javax.servlet.ServletContextListener;
 import javax.servlet.ServletException;
 import javax.servlet.ServletRegistration;
 import javax.servlet.SessionCookieConfig;
@@ -60,8 +60,13 @@ import javax.servlet.annotation.HandlesTypes;
 import javax.servlet.descriptor.JspConfigDescriptor;
 import javax.servlet.http.HttpServletResponse;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.github.rmannibucau.playx.servlet.servlet.internal.AsyncContextImpl;
+import com.github.rmannibucau.playx.servlet.servlet.internal.DynamicFilter;
 import com.github.rmannibucau.playx.servlet.servlet.internal.DynamicServlet;
+import com.github.rmannibucau.playx.servlet.servlet.internal.FilterChainImpl;
 import com.github.rmannibucau.playx.servlet.servlet.internal.RequestAdapter;
 import com.github.rmannibucau.playx.servlet.servlet.internal.RequestDispatcherImpl;
 import com.github.rmannibucau.playx.servlet.servlet.internal.ResponseAdapter;
@@ -70,8 +75,12 @@ import com.typesafe.config.ConfigList;
 import com.typesafe.config.ConfigObject;
 import com.typesafe.config.ConfigValueType;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import play.Environment;
+import play.api.inject.ApplicationLifecycle;
+import play.api.inject.Injector;
+import play.http.HttpEntity;
+import play.mvc.Http;
+import play.mvc.Result;
 
 @Singleton
 public class PlayServletContext implements ServletContext {
@@ -85,6 +94,8 @@ public class PlayServletContext implements ServletContext {
     private Executor executor;
 
     private final List<DynamicServlet> servlets = new ArrayList<>();
+    private final List<DynamicFilter> filters = new ArrayList<>();
+    private final Collection<EventListener> listeners = new ArrayList<>();
 
     private String requestEncoding = StandardCharsets.ISO_8859_1.name();
 
@@ -119,15 +130,14 @@ public class PlayServletContext implements ServletContext {
 
         lifecycle.addStopHook(() -> CompletableFuture.runAsync(this::stop, getDefaultExecutor()));
 
-        safeConfigAccess(config, "playx.servlet.initializers", Config::getStringList)
+        safeConfigAccess(config, "playx.servlet.listeners", Config::getStringList)
                 .ifPresent(clazz -> clazz.forEach(init -> {
                     final ClassLoader classLoader = getClassLoader();
                     try {
-                        final Class<? extends ServletContainerInitializer> initializer =
-                                (Class<? extends ServletContainerInitializer>) classLoader.loadClass(init.trim());
-                        final ServletContainerInitializer instances = initializer.getConstructor()
-                                .newInstance();
-                        instances.onStartup(findClasses(instances), PlayServletContext.this);
+                        final Class<? extends EventListener> initializer =
+                                (Class<? extends EventListener>) classLoader.loadClass(init.trim());
+                        final EventListener listener = initializer.getConstructor().newInstance();
+                        addListener(listener);
                     } catch (final Exception e) {
                         throw new IllegalArgumentException(e);
                     }
@@ -138,23 +148,12 @@ public class PlayServletContext implements ServletContext {
                 final String clazz = requireNonNull(servlet.get("className").unwrapped().toString(),
                         "className must be provided: " + servlet);
                 final String name = ofNullable(servlet.get("name")).map(c -> c.unwrapped().toString()).orElse(clazz);
-                final boolean asyncSupported = ofNullable(servlet.get("asyncSupported"))
-                        .filter(c -> c.valueType() == ConfigValueType.BOOLEAN).map(c -> Boolean.class.cast(c.unwrapped()))
-                        .orElse(false);
+                final boolean asyncSupported = extractAsyncSupported(servlet);
                 final int loadOnStartup = ofNullable(servlet.get("loadOnStartup"))
                         .filter(c -> c.valueType() == ConfigValueType.NUMBER)
                         .map(c -> Number.class.cast(c.unwrapped()).intValue()).orElse(0);
-                final Map<String, String> initParams = ofNullable(servlet.get("initParameters"))
-                        .filter(c -> c.valueType() == ConfigValueType.LIST).map(
-                                list -> ConfigList.class.cast(list).stream()
-                                        .filter(it -> it.valueType() == ConfigValueType.OBJECT).map(ConfigObject.class::cast)
-                                        .collect(toMap(obj -> obj.get("name").unwrapped().toString(),
-                                                obj -> obj.get("value").unwrapped().toString())))
-                        .orElseGet(Collections::emptyMap);
-                final String[] mappings = ofNullable(servlet.get("mappings")).filter(c -> c.valueType() == ConfigValueType.LIST)
-                        .map(list -> ConfigList.class.cast(list).stream().map(c -> c.unwrapped().toString())
-                                .toArray(String[]::new))
-                        .orElseGet(() -> new String[0]);
+                final Map<String, String> initParams = extractInitParams(servlet);
+                final String[] mappings = extractMappings(servlet);
 
                 final ClassLoader classLoader = getClassLoader();
                 final Class<? extends Servlet> loadedClass;
@@ -176,7 +175,69 @@ public class PlayServletContext implements ServletContext {
             });
         });
 
-        // we load them all anyway here, no lazy handling for now
+        safeConfigAccess(config, "playx.servlet.filters", Config::getObjectList).ifPresent(filters -> {
+            filters.forEach(filter -> {
+                final String clazz = requireNonNull(filter.get("className").unwrapped().toString(),
+                        "className must be provided: " + filter);
+                final String name = ofNullable(filter.get("name")).map(c -> c.unwrapped().toString()).orElse(clazz);
+                final boolean asyncSupported = extractAsyncSupported(filter);
+                final Map<String, String> initParams = extractInitParams(filter);
+                final String[] mappings = extractMappings(filter);
+
+                final ClassLoader classLoader = getClassLoader();
+                final Class<? extends Filter> loadedClass;
+                try {
+                    loadedClass = (Class<? extends Filter>) classLoader.loadClass(clazz.trim());
+                } catch (final ClassNotFoundException e) {
+                    throw new IllegalArgumentException(e);
+                }
+
+                final FilterRegistration.Dynamic dynamic = addFilter(name, loadedClass);
+                dynamic.addMappingForUrlPatterns(EnumSet.allOf(DispatcherType.class), false, mappings);
+                initParams.forEach(dynamic::setInitParameter);
+                if (asyncSupported) {
+                    dynamic.setAsyncSupported(true);
+                } else {
+                    LOGGER.info("Filter {} is not set with asyncSupported=true", name);
+                }
+            });
+        });
+
+        // launch initializers
+        safeConfigAccess(config, "playx.servlet.initializers", Config::getStringList)
+                .ifPresent(clazz -> clazz.forEach(init -> {
+                    final ClassLoader classLoader = getClassLoader();
+                    try {
+                        final Class<? extends ServletContainerInitializer> initializer =
+                                (Class<? extends ServletContainerInitializer>) classLoader.loadClass(init.trim());
+                        final ServletContainerInitializer instances = initializer.getConstructor()
+                                                                                 .newInstance();
+                        instances.onStartup(findClasses(instances), PlayServletContext.this);
+                    } catch (final Exception e) {
+                        throw new IllegalArgumentException(e);
+                    }
+                }));
+
+        // start listeners
+        if (!listeners.isEmpty()) {
+            final ServletContextEvent event = new ServletContextEvent(this);
+            listeners.stream()
+                     .filter(ServletContextListener.class::isInstance)
+                     .map(ServletContextListener.class::cast)
+                     .forEach(l -> l.contextInitialized(event));
+        }
+
+        // filters
+        this.filters.forEach(f -> {
+            try {
+                f.getInstance().init(f.toFilterConfig(this));
+            } catch (final ServletException e) {
+                throw new IllegalStateException(e);
+            }
+        });
+
+
+        // we load all servlets anyway here, no lazy handling for now
         this.servlets.sort(comparing(DynamicServlet::getLoadOnStartup));
         this.servlets.forEach(s -> {
             try {
@@ -185,6 +246,29 @@ public class PlayServletContext implements ServletContext {
                 throw new IllegalStateException(e);
             }
         });
+    }
+
+    private Boolean extractAsyncSupported(ConfigObject filter) {
+        return ofNullable(filter.get("asyncSupported"))
+                .filter(c -> c.valueType() == ConfigValueType.BOOLEAN).map(c -> Boolean.class.cast(c.unwrapped()))
+                .orElse(false);
+    }
+
+    private Map<String, String> extractInitParams(ConfigObject servlet) {
+        return ofNullable(servlet.get("initParameters"))
+                .filter(c -> c.valueType() == ConfigValueType.LIST).map(
+                        list -> ConfigList.class.cast(list).stream()
+                                                .filter(it -> it.valueType() == ConfigValueType.OBJECT).map(ConfigObject.class::cast)
+                                                .collect(toMap(obj -> obj.get("name").unwrapped().toString(),
+                                        obj -> obj.get("value").unwrapped().toString())))
+                .orElseGet(Collections::emptyMap);
+    }
+
+    private String[] extractMappings(ConfigObject filter) {
+        return ofNullable(filter.get("mappings")).filter(c -> c.valueType() == ConfigValueType.LIST)
+                .map(list -> ConfigList.class.cast(list).stream().map(c -> c.unwrapped().toString())
+                                             .toArray(String[]::new))
+                .orElseGet(() -> new String[0]);
     }
 
     private <T> Optional<T> safeConfigAccess(final Config config, final String key,
@@ -209,10 +293,23 @@ public class PlayServletContext implements ServletContext {
     }
 
     public void stop() {
+        // servlets destruction
         servlets.stream().sorted(comparing(DynamicServlet::getLoadOnStartup).reversed()).forEach(s -> s.getInstance().destroy());
+
+        // filters destruction
+        filters.forEach(f -> f.getInstance().destroy());
+
+        // start listeners
+        if (!listeners.isEmpty()) {
+            final ServletContextEvent event = new ServletContextEvent(this);
+            listeners.stream()
+                     .filter(ServletContextListener.class::isInstance)
+                     .map(ServletContextListener.class::cast)
+                     .forEach(l -> l.contextDestroyed(event));
+        }
     }
 
-    public CompletionStage<Result> executeInvoke(final DynamicServlet servlet, final Http.RequestHeader requestHeader,
+    public CompletionStage<Result> executeInvoke(final ServletMatching servlet, final Http.RequestHeader requestHeader,
             final InputStream stream, final String servletPath) {
         final Thread thread = Thread.currentThread();
         final ClassLoader contextClassLoader = thread.getContextClassLoader();
@@ -220,9 +317,9 @@ public class PlayServletContext implements ServletContext {
         try {
             final ResponseAdapter response = new ResponseAdapter(
                     (requestHeader.secure() ? "https" : "http") + "://" + requestHeader.host() + requestHeader.uri(), this);
-            final RequestAdapter request = new RequestAdapter(requestHeader, stream, response, injector, this, servlet, servletPath);
+            final RequestAdapter request = new RequestAdapter(requestHeader, stream, response, injector, this, servlet.getDynamicServlet(), servletPath);
             request.setAttribute(ResponseAdapter.class.getName(), response);
-            if (!servlet.isAsyncSupported()) {
+            if (!servlet.getDynamicServlet().isAsyncSupported()) {
                 return CompletableFuture.supplyAsync(() -> doExecute(servlet, response, request), getDefaultExecutor())
                         .thenCompose(identity());
             }
@@ -232,10 +329,15 @@ public class PlayServletContext implements ServletContext {
         }
     }
 
-    private CompletionStage<Result> doExecute(final DynamicServlet servlet, final ResponseAdapter response,
-            final RequestAdapter request) {
+    private CompletionStage<Result> doExecute(final ServletMatching matched,
+                                              final ResponseAdapter response,
+                                              final RequestAdapter request) {
         try {
-            servlet.getInstance().service(request, response);
+            if (matched.getDynamicFilters().isEmpty()) {
+                matched.getDynamicServlet().getInstance().service(request, response);
+            } else {
+                new FilterChainImpl(matched.getDynamicFilters(), matched.getDynamicServlet()).doFilter(request, response);
+            }
         } catch (final ServletException | IOException ex) {
             if (request.isAsyncStarted() && AsyncContextImpl.class.isInstance(request.getAsyncContext())) {
                 AsyncContextImpl.class.cast(request.getAsyncContext()).onError(ex);
@@ -252,7 +354,6 @@ public class PlayServletContext implements ServletContext {
         return response.toResult();
     }
 
-    // todo: replace by servlet chain with filters
     public Optional<ServletMatching> findMatchingServlet(final Http.RequestHeader requestHeader) {
         final URI uri = URI.create(requestHeader.uri());
         final String path = uri.getPath();
@@ -266,8 +367,19 @@ public class PlayServletContext implements ServletContext {
         final String matching = path.substring(getContextPath().length());
         return servlets.stream()
                 .map(servlet -> servlet.getMappings().stream().map(mapping -> findServletPath(mapping, matching))
-                        .filter(Objects::nonNull).findFirst().map(mapping -> new ServletMatching(servlet, mapping)))
+                        .filter(Objects::nonNull).findFirst()
+                       .map(mapping -> new ServletMatching(findMatchingFilters(servlet.getName(), path), servlet, mapping)))
                 .filter(Optional::isPresent).findFirst().flatMap(identity());
+    }
+
+    private List<DynamicFilter> findMatchingFilters(final String servlet, final String path) {
+        if (filters.isEmpty()) {
+            return emptyList();
+        }
+        return filters.stream()
+                .filter(f -> f.getServletNameMappings().contains(servlet)
+                        || f.getUrlPatternMappings().stream().anyMatch(it -> findServletPath(it, path) != null))
+                .collect(toList());
     }
 
     // very light impl but should be enough here - todo: pathinfo too
@@ -470,7 +582,7 @@ public class PlayServletContext implements ServletContext {
 
     @Override
     public ServletRegistration getServletRegistration(final String servletName) {
-        throw new UnsupportedOperationException();
+        return servlets.stream().filter(s -> s.getName().equals(servletName)).findFirst().orElse(null);
     }
 
     @Override
@@ -481,17 +593,23 @@ public class PlayServletContext implements ServletContext {
 
     @Override
     public FilterRegistration.Dynamic addFilter(final String filterName, final String className) {
-        throw new UnsupportedOperationException();
+        try {
+            return addFilter(filterName, (Class<? extends Filter>) getClassLoader().loadClass(className));
+        } catch (final ClassNotFoundException e) {
+            throw new IllegalArgumentException(e);
+        }
     }
 
     @Override
     public FilterRegistration.Dynamic addFilter(final String filterName, final Filter filter) {
-        throw new UnsupportedOperationException();
+        final DynamicFilter dynamicFilter = new DynamicFilter(filterName, filter);
+        filters.add(dynamicFilter);
+        return dynamicFilter;
     }
 
     @Override
     public FilterRegistration.Dynamic addFilter(final String filterName, final Class<? extends Filter> filterClass) {
-        throw new UnsupportedOperationException();
+        return addFilter(filterName, newInstance(filterClass));
     }
 
     @Override
@@ -501,12 +619,13 @@ public class PlayServletContext implements ServletContext {
 
     @Override
     public FilterRegistration getFilterRegistration(final String filterName) {
-        throw new UnsupportedOperationException();
+        return filters.stream().filter(f -> f.getName().equals(filterName)).findFirst().orElse(null);
     }
 
     @Override
     public Map<String, ? extends FilterRegistration> getFilterRegistrations() {
-        throw new UnsupportedOperationException();
+        return filters.stream().flatMap(d -> d.getUrlPatternMappings().stream().map(e -> new AbstractMap.SimpleEntry<>(e, d)))
+                      .collect(toMap(Map.Entry::getKey, Map.Entry::getValue));
     }
 
     @Override
@@ -531,22 +650,29 @@ public class PlayServletContext implements ServletContext {
 
     @Override
     public void addListener(final String className) {
-        // no-op
+        try {
+            addListener((Class<? extends EventListener>) getClassLoader().loadClass(className.trim()));
+        } catch (final ClassNotFoundException e) {
+            throw new IllegalArgumentException(e);
+        }
     }
 
     @Override
     public <T extends EventListener> void addListener(final T t) {
-        // no-op
+        if (!ServletContextListener.class.isInstance(t)) {
+            LOGGER.error("Unsupported listener: " + t + ", only ServletContextListener are supported for now");
+        }
+        listeners.add(t);
     }
 
     @Override
     public void addListener(final Class<? extends EventListener> listenerClass) {
-        // no-op
+        addListener(createListener(listenerClass));
     }
 
     @Override
     public <T extends EventListener> T createListener(final Class<T> c) {
-        throw new UnsupportedOperationException();
+        return newInstance(c);
     }
 
     @Override
@@ -614,14 +740,22 @@ public class PlayServletContext implements ServletContext {
     }
 
     public static class ServletMatching {
+        private final List<DynamicFilter> dynamicFilters;
 
         private final DynamicServlet dynamicServlet;
 
         private final String servletPath;
 
-        private ServletMatching(final DynamicServlet dynamicServlet, final String servletPath) {
+        private ServletMatching(final List<DynamicFilter> dynamicFilters,
+                                final DynamicServlet dynamicServlet,
+                                final String servletPath) {
+            this.dynamicFilters = dynamicFilters;
             this.dynamicServlet = dynamicServlet;
             this.servletPath = servletPath;
+        }
+
+        public List<DynamicFilter> getDynamicFilters() {
+            return dynamicFilters;
         }
 
         public DynamicServlet getDynamicServlet() {
