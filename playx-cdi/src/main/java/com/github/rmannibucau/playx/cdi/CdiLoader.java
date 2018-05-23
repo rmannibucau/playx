@@ -7,7 +7,53 @@ import static java.util.Objects.requireNonNull;
 import static java.util.Optional.of;
 import static java.util.Optional.ofNullable;
 import static java.util.stream.Collectors.toList;
-import static java.util.stream.Collectors.toSet;
+
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.lang.annotation.Annotation;
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Enumeration;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiFunction;
+import java.util.function.Supplier;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
+import java.util.stream.Stream;
+
+import javax.enterprise.context.ApplicationScoped;
+import javax.enterprise.context.Dependent;
+import javax.enterprise.event.Observes;
+import javax.enterprise.inject.Any;
+import javax.enterprise.inject.Default;
+import javax.enterprise.inject.se.SeContainer;
+import javax.enterprise.inject.se.SeContainerInitializer;
+import javax.enterprise.inject.spi.AfterBeanDiscovery;
+import javax.enterprise.inject.spi.AnnotatedType;
+import javax.enterprise.inject.spi.BeanManager;
+import javax.enterprise.inject.spi.BeforeBeanDiscovery;
+import javax.enterprise.inject.spi.Extension;
+import javax.enterprise.inject.spi.InjectionTarget;
+import javax.enterprise.inject.spi.ProcessBeanAttributes;
+import javax.enterprise.inject.spi.configurator.BeanConfigurator;
+import javax.inject.Singleton;
+
+import org.slf4j.ILoggerFactory;
+import org.slf4j.LoggerFactory;
+
+import com.typesafe.config.Config;
+import com.typesafe.config.ConfigObject;
+import com.typesafe.config.ConfigValueType;
 
 import akka.actor.ActorSystem;
 import akka.stream.Materializer;
@@ -76,53 +122,6 @@ import scala.concurrent.ExecutionContext;
 import scala.concurrent.ExecutionContextExecutor;
 import scala.concurrent.Future;
 import scala.reflect.ClassTag;
-
-import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
-import java.lang.annotation.Annotation;
-import java.net.MalformedURLException;
-import java.net.URL;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Enumeration;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Optional;
-import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Executor;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BiFunction;
-import java.util.function.Supplier;
-import java.util.jar.JarEntry;
-import java.util.jar.JarFile;
-import java.util.stream.Stream;
-
-import javax.enterprise.context.ApplicationScoped;
-import javax.enterprise.context.Dependent;
-import javax.enterprise.event.Observes;
-import javax.enterprise.inject.Any;
-import javax.enterprise.inject.Default;
-import javax.enterprise.inject.se.SeContainer;
-import javax.enterprise.inject.se.SeContainerInitializer;
-import javax.enterprise.inject.spi.AfterBeanDiscovery;
-import javax.enterprise.inject.spi.AnnotatedType;
-import javax.enterprise.inject.spi.BeanManager;
-import javax.enterprise.inject.spi.BeforeBeanDiscovery;
-import javax.enterprise.inject.spi.Extension;
-import javax.enterprise.inject.spi.InjectionTarget;
-import javax.enterprise.inject.spi.ProcessBeanAttributes;
-import javax.enterprise.inject.spi.configurator.BeanConfigurator;
-import javax.inject.Singleton;
-
-import com.typesafe.config.Config;
-import com.typesafe.config.ConfigObject;
-import com.typesafe.config.ConfigValueType;
-
-import org.slf4j.ILoggerFactory;
-import org.slf4j.LoggerFactory;
 
 public class CdiLoader implements ApplicationLoader {
 
@@ -235,17 +234,11 @@ public class CdiLoader implements ApplicationLoader {
                             return singletonList(classes.iterator().next());
                         }
                         // here we don't have any class in the root package so need to list them all
-                        final Collection<String> pcks = classes.stream()
-                                .map(clazz -> clazz.replace('/', '.').substring(0, clazz.length() - ".class".length()))
-                                .collect(toSet());
-                        final Collection<String> toDrop = new ArrayList<>();
-                        for (final String c : pcks) {
-                            if (pcks.stream().anyMatch(it -> !it.equals(c) && c.startsWith(it))) {
-                                toDrop.add(c);
-                            }
-                        }
+                        final PackageCleaner packageCleaner = new PackageCleaner();
+                        final Collection<String> pcks = packageCleaner.removeOverlaps(packages);
                         return classes.stream()
-                                .filter(it -> toDrop.stream().anyMatch(it::startsWith))
+                                .filter(className -> pcks.stream()
+                                     .anyMatch(pack -> className.startsWith(pack) && !className.substring(pack.length() + 1).contains(".")))
                                 .collect(toList());
                     }
                 }
