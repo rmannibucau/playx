@@ -232,7 +232,7 @@ public class CdiLoader implements ApplicationLoader {
                                 .collect(toList());
                         if (name.equals(classes.get(0).substring(0, classes.get(0).lastIndexOf('.')))) {
                             names.add(classes.iterator().next());
-                        } else {
+                        } else if (recursive) {
                             // here we don't have any class in the root package so need to list them all
                             final PackageCleaner packageCleaner = new PackageCleaner();
                             final Collection<String> pcks = packageCleaner.removeOverlaps(packages);
