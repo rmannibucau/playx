@@ -2,7 +2,6 @@ package com.github.rmannibucau.playx.cdi;
 
 import static java.util.Collections.emptyMap;
 import static java.util.Collections.list;
-import static java.util.Collections.singletonList;
 import static java.util.Objects.requireNonNull;
 import static java.util.Optional.of;
 import static java.util.Optional.ofNullable;
@@ -210,6 +209,7 @@ public class CdiLoader implements ApplicationLoader {
         final String pck = name.replace(".", "/");
         try {
             final Enumeration<URL> urls = loader.getResources(pck);
+            final Collection<String> names = new ArrayList<>();
             while (urls.hasMoreElements()) {
                 final File next = toFile(urls.nextElement());
                 if (next != null && next.exists() && !next.isDirectory()) {
@@ -231,17 +231,23 @@ public class CdiLoader implements ApplicationLoader {
                                 .sorted()
                                 .collect(toList());
                         if (name.equals(classes.get(0).substring(0, classes.get(0).lastIndexOf('.')))) {
-                            return singletonList(classes.iterator().next());
+                            names.add(classes.iterator().next());
+                        } else {
+                            // here we don't have any class in the root package so need to list them all
+                            final PackageCleaner packageCleaner = new PackageCleaner();
+                            final Collection<String> pcks = packageCleaner.removeOverlaps(packages);
+                            names.addAll(classes
+                                    .stream().filter(
+                                            className -> pcks.stream()
+                                                    .anyMatch(pack -> className.startsWith(pack)
+                                                            && !className.substring(pack.length() + 1).contains(".")))
+                                    .collect(toList()));
                         }
-                        // here we don't have any class in the root package so need to list them all
-                        final PackageCleaner packageCleaner = new PackageCleaner();
-                        final Collection<String> pcks = packageCleaner.removeOverlaps(packages);
-                        return classes.stream()
-                                .filter(className -> pcks.stream()
-                                     .anyMatch(pack -> className.startsWith(pack) && !className.substring(pack.length() + 1).contains(".")))
-                                .collect(toList());
                     }
                 }
+            }
+            if (!names.isEmpty()) {
+                return names;
             }
         } catch (final IOException e1) {
             // no-op
