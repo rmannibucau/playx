@@ -74,6 +74,8 @@ public class RequestAdapter implements HttpServletRequest {
 
     private final String servletPath;
 
+    private final String facingServletPath;
+
     private ServletInputStream inputStream;
 
     private BufferedReader reader;
@@ -93,6 +95,7 @@ public class RequestAdapter implements HttpServletRequest {
         this.injector = injector;
         this.servlet = servlet;
         this.servletPath = servletPath;
+        this.facingServletPath = servletPath.endsWith("/") ? servletPath.substring(0, servletPath.length() - 1) : servletPath;
         parseParams();
     }
 
@@ -219,7 +222,7 @@ public class RequestAdapter implements HttpServletRequest {
 
     @Override
     public String getServletPath() {
-        return servletPath;
+        return facingServletPath;
     }
 
     @Override
