@@ -258,8 +258,8 @@ public class CdiLoader implements ApplicationLoader {
     private void addProvidedBeans(final Context context, final SeContainerInitializer initializer, final Injector injector,
                                   final Application application) {
         final play.Environment environment = context.environment();
-        final Configuration configuration = Configuration.load(environment.asScala());
-        final Config config = configuration.underlying();
+        final Config config = application.config();
+        final Configuration configuration = new Configuration(config);
 
         initializer.addExtensions(new Extension() { // todo: make it more configured and modular reusing
 
