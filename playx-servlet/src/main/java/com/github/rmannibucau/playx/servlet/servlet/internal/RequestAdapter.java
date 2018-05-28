@@ -25,6 +25,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.StringTokenizer;
 import java.util.TimeZone;
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
@@ -59,6 +60,8 @@ public class RequestAdapter implements HttpServletRequest {
     static {
         Stream.of(DATE_FORMATS).forEach(f -> f.setTimeZone(GMT_ZONE));
     }
+
+    private final Supplier<DateFormat[]> dateFormats;
 
     private final Http.RequestHeader playDelegate;
 
@@ -96,6 +99,17 @@ public class RequestAdapter implements HttpServletRequest {
         this.servlet = servlet;
         this.servletPath = servletPath;
         this.facingServletPath = servletPath.endsWith("/") ? servletPath.substring(0, servletPath.length() - 1) : servletPath;
+        this.dateFormats = new Supplier<DateFormat[]>() { // lazy
+            private DateFormat[] formats;
+
+            @Override
+            public DateFormat[] get() {
+                if (formats == null) {
+                    formats = Stream.of(DATE_FORMATS).map(DateFormat::clone).map(DateFormat.class::cast).toArray(DateFormat[]::new);
+                }
+                return formats;
+            }
+        };
         parseParams();
     }
 
@@ -536,10 +550,10 @@ public class RequestAdapter implements HttpServletRequest {
         }
     }
 
-    private static long parseDate(final String value) {
-        for (final DateFormat DATE_FORMAT : DATE_FORMATS) {
+    private long parseDate(final String value) {
+        for (final DateFormat format : dateFormats.get()) {
             try {
-                return DATE_FORMAT.parse(value).getTime();
+                return format.parse(value).getTime();
             } catch (final ParseException var5) {
                 // no-op
             }
