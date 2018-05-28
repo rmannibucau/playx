@@ -17,5 +17,6 @@ public class RequestDataServlet extends HttpServlet {
         writer.println("context=" + req.getContextPath());
         writer.println("servlet=" + req.getServletPath());
         writer.println("pathinfo=" + req.getPathInfo());
+        writer.println("query=" + req.getQueryString());
     }
 }

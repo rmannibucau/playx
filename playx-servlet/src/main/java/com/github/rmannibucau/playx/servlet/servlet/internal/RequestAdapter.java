@@ -162,10 +162,7 @@ public class RequestAdapter implements HttpServletRequest {
         }
         final String servletUri = getRequestURI().substring(getContextPath().length());
         if (servletUri.startsWith(servletPath)) { // /xxx/* matching
-            final String queryString = getQueryString();
-            final String servletUriNoQuery = queryString.isEmpty() ? servletUri : servletUri.substring(0,
-                    servletUri.length() - queryString.length() - 1);
-            return servletUriNoQuery.substring(servletPath.endsWith("/") ? servletPath.length() - 1 : servletPath.length());
+            return servletUri.substring(servletPath.endsWith("/") ? servletPath.length() - 1 : servletPath.length());
         }
         return null;
     }

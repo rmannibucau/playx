@@ -55,9 +55,15 @@ public class ServletTest {
     };
 
     @Test
+    public void requestWithQuery() {
+        doTest("/request?foo=bar", "uri=/request\nurl=http://localhost:" + server.port() + "/request\ncontext=\n"
+                + "servlet=/request\npathinfo=\nquery=foo=bar");
+    }
+
+    @Test
     public void request() {
         doTest("/request", "uri=/request\nurl=http://localhost:" + server.port() + "/request\ncontext=\n"
-                + "servlet=/request\npathinfo=");
+                + "servlet=/request\npathinfo=\nquery=");
     }
 
     @Test
