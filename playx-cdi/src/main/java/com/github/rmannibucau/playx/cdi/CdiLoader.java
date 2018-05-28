@@ -1,5 +1,6 @@
 package com.github.rmannibucau.playx.cdi;
 
+import static java.util.Collections.emptyList;
 import static java.util.Collections.emptyMap;
 import static java.util.Collections.list;
 import static java.util.Objects.requireNonNull;
@@ -252,7 +253,7 @@ public class CdiLoader implements ApplicationLoader {
         } catch (final IOException e1) {
             // no-op
         }
-        return null;
+        return emptyList();
     }
 
     private void addProvidedBeans(final Context context, final SeContainerInitializer initializer, final Injector injector,
