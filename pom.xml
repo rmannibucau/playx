@@ -5,7 +5,7 @@
   <groupId>com.github.rmannibucau</groupId>
   <artifactId>playx</artifactId>
   <packaging>pom</packaging>
-  <version>0.0.9-SNAPSHOT</version>
+  <version>0.0.9</version>
   <name>Playx</name>
   <description>Some integration of Servlet/CDI specifications into Play! framework.</description>
   <url>https://github.com/rmannibucau/playx</url>
@@ -195,7 +195,7 @@
     <connection>scm:git:https://github.com/rmannibucau/playx.git</connection>
     <developerConnection>scm:git:https://github.com/rmannibucau/playx.git</developerConnection>
     <url>https://github.com/rmannibucau/playx</url>
-    <tag>HEAD</tag>
+    <tag>playx-0.0.9</tag>
   </scm>
 
   <distributionManagement>
