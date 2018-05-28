@@ -213,7 +213,8 @@ public class CdiLoader implements ApplicationLoader {
             final Collection<String> names = new ArrayList<>();
             while (urls.hasMoreElements()) {
                 final File next = toFile(urls.nextElement());
-                if (next != null && next.exists() && !next.isDirectory()) {
+                final boolean exists = next != null && next.exists();
+                if (exists && !next.isDirectory()) {
                     try (final JarFile file = new JarFile(next)) {
                         final Collection<JarEntry> entries = list(file.entries());
                         final Set<String> packages = new HashSet<>();
@@ -245,6 +246,13 @@ public class CdiLoader implements ApplicationLoader {
                                     .collect(toList()));
                         }
                     }
+                } else if (exists) { // cheap mode, enforces to have a class in the package directly
+                    ofNullable(next.listFiles())
+                            .map(Stream::of)
+                            .orElseGet(Stream::empty)
+                            .filter(c -> c.getName().endsWith(".class"))
+                            .findFirst()
+                            .ifPresent(c -> names.add(name + '.' + c.getName().substring(0, c.getName().length() - ".class".length())));
                 }
             }
             if (!names.isEmpty()) {
