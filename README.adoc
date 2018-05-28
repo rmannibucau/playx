@@ -299,3 +299,33 @@ So you can use it through:
 @ConfigProperty(name = "app.service.url")
 private String url;
 ----
+
+== Swagger Integration
+
+[source,xml]
+----
+<dependency>
+    <groupId>com.github.rmannibucau</groupId>
+    <artifactId>playx-swagger</artifactId>
+    <version>${playx.version}</version>
+</dependency>
+----
+
+Playx Swagger extends play-swagger module to support to enrich swagger with
+custom swagger readers. It requires to provide a reader class with a `read(Set<Class<?>>)` method and
+taking a `Swagger` instance in its constructor.
+
+[source,config]
+----
+swagger.api.additional = [
+    {
+        reader: "io.swagger.jaxrs.Reader",
+        prefix: "/api", // prefixes all operation paths, default to empty
+        classes: [
+            "app.MyJaxRsEndpoint1",
+            "app.MyJaxRsEndpoint2",
+            "app.MyJaxRsEndpoint3"
+        ]
+    }
+]
+----
