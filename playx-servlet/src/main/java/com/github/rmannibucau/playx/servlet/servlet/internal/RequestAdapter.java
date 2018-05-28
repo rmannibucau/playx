@@ -207,7 +207,9 @@ public class RequestAdapter implements HttpServletRequest {
 
     @Override
     public String getRequestURI() {
-        return playDelegate.uri();
+        final String uri = playDelegate.uri();
+        final String queryString = getQueryString();
+        return uri.substring(0, uri.length() - queryString.length() - (queryString.isEmpty() ? 0 : 1));
     }
 
     @Override
