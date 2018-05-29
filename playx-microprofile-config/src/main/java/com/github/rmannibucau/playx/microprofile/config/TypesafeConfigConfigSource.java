@@ -15,6 +15,8 @@ import com.typesafe.config.ConfigList;
 import com.typesafe.config.ConfigObject;
 import com.typesafe.config.ConfigValue;
 
+import play.api.Environment;
+
 public class TypesafeConfigConfigSource implements ConfigSource {
 
     private volatile Map<String, String> configuration;
@@ -26,10 +28,18 @@ public class TypesafeConfigConfigSource implements ConfigSource {
                 if (configuration == null) {
                     final Map<String, String> aggregator = new HashMap<>();
 
-                    final Instance<Config> selected = CDI.current().select(Config.class);
-                    if (selected.isResolvable()) {
-                        final Config config = selected.get();
+                    final CDI<Object> current = CDI.current();
+                    final Instance<Config> configs = current.select(Config.class);
+                    if (configs.isResolvable()) {
+                        final Config config = configs.get();
                         visit(aggregator, config, "");
+                    }
+
+                    final Instance<Environment> environment = current.select(Environment.class);
+                    if (environment.isResolvable()) {
+                        final Environment env = environment.get();
+                        aggregator.put("playx.application.mode", env.mode().asJava().name());
+                        aggregator.put("playx.application.home", env.rootPath().getAbsolutePath());
                     }
 
                     configuration = aggregator;
