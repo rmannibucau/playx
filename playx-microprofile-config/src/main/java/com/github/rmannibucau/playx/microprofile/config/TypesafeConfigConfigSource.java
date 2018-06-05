@@ -1,5 +1,6 @@
 package com.github.rmannibucau.playx.microprofile.config;
 
+import static java.util.Collections.emptyMap;
 import static java.util.stream.Collectors.joining;
 
 import java.util.HashMap;
@@ -28,18 +29,22 @@ public class TypesafeConfigConfigSource implements ConfigSource {
                 if (configuration == null) {
                     final Map<String, String> aggregator = new HashMap<>();
 
-                    final CDI<Object> current = CDI.current();
-                    final Instance<Config> configs = current.select(Config.class);
-                    if (configs.isResolvable()) {
-                        final Config config = configs.get();
-                        visit(aggregator, config, "");
-                    }
+                    try {
+                        final CDI<Object> current = CDI.current();
+                        final Instance<Config> configs = current.select(Config.class);
+                        if (configs.isResolvable()) {
+                            final Config config = configs.get();
+                            visit(aggregator, config, "");
+                        }
 
-                    final Instance<Environment> environment = current.select(Environment.class);
-                    if (environment.isResolvable()) {
-                        final Environment env = environment.get();
-                        aggregator.put("playx.application.mode", env.mode().asJava().name());
-                        aggregator.put("playx.application.home", env.rootPath().getAbsolutePath());
+                        final Instance<Environment> environment = current.select(Environment.class);
+                        if (environment.isResolvable()) {
+                            final Environment env = environment.get();
+                            aggregator.put("playx.application.mode", env.mode().asJava().name());
+                            aggregator.put("playx.application.home", env.rootPath().getAbsolutePath());
+                        }
+                    } catch (final RuntimeException re) {
+                        return emptyMap(); // server not yet started or ready, retry later
                     }
 
                     configuration = aggregator;
