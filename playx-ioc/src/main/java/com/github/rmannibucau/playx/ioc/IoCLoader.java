@@ -1,9 +1,24 @@
 package com.github.rmannibucau.playx.ioc;
 
 import static java.util.Locale.ROOT;
-import static java.util.function.Function.identity;
 import static java.util.stream.Collectors.toList;
 import static java.util.stream.Collectors.toMap;
+
+import java.io.File;
+import java.io.InputStream;
+import java.lang.reflect.InvocationTargetException;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.BiFunction;
+import java.util.function.Consumer;
+
+import com.typesafe.config.Config;
 
 import akka.actor.ActorSystem;
 import akka.stream.Materializer;
@@ -23,21 +38,6 @@ import scala.Option;
 import scala.concurrent.Future;
 import scala.reflect.ClassTag;
 
-import java.io.File;
-import java.io.InputStream;
-import java.lang.reflect.InvocationTargetException;
-import java.net.URL;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.Optional;
-import java.util.function.BiFunction;
-import java.util.function.Consumer;
-
-import com.typesafe.config.Config;
-
 public class IoCLoader implements ApplicationLoader {
 
     @Override
@@ -49,7 +49,7 @@ public class IoCLoader implements ApplicationLoader {
             throw new IllegalArgumentException("No loader set for playx.ioc.loaders");
         }
 
-        final Map<ApplicationLoader, Application> instances = loaders.stream().map(clazz -> {
+        final List<ApplicationLoader> appLoaders = loaders.stream().map(clazz -> {
             try {
                 return ApplicationLoader.class
                         .cast(context.environment().classLoader().loadClass(clazz).getConstructor().newInstance());
@@ -57,9 +57,15 @@ public class IoCLoader implements ApplicationLoader {
                     | IllegalAccessException e) {
                 throw new IllegalArgumentException(e);
             }
-        }).collect(toMap(identity(), l -> l.load(context), (o, o2) -> {
-            throw new IllegalStateException("Conflicting keys for " + o + " || " + o2);
-        }, LinkedHashMap::new));
+        }).collect(toList());
+        final Map<ApplicationLoader, Application> instances = new LinkedHashMap<>();
+        for (final ApplicationLoader loader : appLoaders) {
+            // add previous apps in the app which will be built to let it look up other context beans
+            if (Consumer.class.isInstance(loader)) {
+                Consumer.class.cast(loader).accept(instances.values());
+            }
+            instances.put(loader, loader.load(context));
+        }
 
         final Map<String, String> routingTable = safeConfigAccess(config, "playx.ioc.routing", Config::getObjectList)
                 .orElseGet(Collections::emptyList).stream()

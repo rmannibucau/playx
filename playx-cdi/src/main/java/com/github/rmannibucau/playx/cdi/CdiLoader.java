@@ -26,6 +26,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
@@ -46,6 +47,7 @@ import javax.enterprise.inject.spi.Extension;
 import javax.enterprise.inject.spi.InjectionTarget;
 import javax.enterprise.inject.spi.ProcessBeanAttributes;
 import javax.enterprise.inject.spi.configurator.BeanConfigurator;
+import javax.enterprise.util.TypeLiteral;
 import javax.inject.Singleton;
 
 import org.slf4j.ILoggerFactory;
@@ -123,9 +125,9 @@ import scala.concurrent.ExecutionContextExecutor;
 import scala.concurrent.Future;
 import scala.reflect.ClassTag;
 
-public class CdiLoader implements ApplicationLoader {
-
-    final BiFunction<Context, String, Class<?>> classLoader = (context, className) -> {
+public class CdiLoader implements ApplicationLoader, Consumer<Collection<Application>> {
+    private final Collection<Application> otherApplications = new ArrayList<>();
+    private final BiFunction<Context, String, Class<?>> classLoader = (context, className) -> {
         try {
             return context.environment().classLoader().loadClass(className.trim());
         } catch (final ClassNotFoundException e) {
@@ -370,6 +372,11 @@ public class CdiLoader implements ApplicationLoader {
                 addBean(event,
                         new LazyProvider<>(() -> new OptionalSourceMapper(OptionConverters.toScala(context.sourceMapper()))),
                         OptionalSourceMapper.class);
+                event.addBean().id("playx.cdi.beans.builtin.applications").beanClass(null)
+                     .types(new TypeLiteral<Collection<Application>>(){}.getType(), Object.class)
+                     .qualifiers(Default.Literal.INSTANCE, Any.Literal.INSTANCE)
+                     .scope(Dependent.class)
+                     .createWith(ctx -> otherApplications);
 
                 // i18n
                 final Supplier<play.api.i18n.Langs> langs = new LazyProvider<>(
@@ -480,7 +487,7 @@ public class CdiLoader implements ApplicationLoader {
 
             private <T> void addBean(final AfterBeanDiscovery event, final Supplier<T> instance, final Class<T> mainApi,
                                      final Class<?>... types) {
-                event.addBean().id(toId(mainApi)).beanClass(Injector.class)
+                event.addBean().id(toId(mainApi)).beanClass(mainApi)
                         .types(Stream.concat(Stream.of(mainApi), Stream.concat(Stream.of(types), Stream.of(Object.class)))
                                 .toArray(Class[]::new))
                         .qualifiers(Default.Literal.INSTANCE, Any.Literal.INSTANCE)
@@ -492,6 +499,11 @@ public class CdiLoader implements ApplicationLoader {
                 return "playx.cdi.beans.builtin." + type.getName();
             }
         });
+    }
+
+    @Override
+    public void accept(final Collection<Application> applications) {
+        this.otherApplications.addAll(applications);
     }
 
     private static <T> Optional<T> safeConfigAccess(final Config config, final String key,
