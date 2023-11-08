@@ -50,6 +50,7 @@ import javax.enterprise.inject.spi.configurator.BeanConfigurator;
 import javax.enterprise.util.TypeLiteral;
 import javax.inject.Singleton;
 
+import org.apache.pekko.actor.CoordinatedShutdown;
 import org.slf4j.ILoggerFactory;
 import org.slf4j.LoggerFactory;
 
@@ -57,8 +58,8 @@ import com.typesafe.config.Config;
 import com.typesafe.config.ConfigObject;
 import com.typesafe.config.ConfigValueType;
 
-import akka.actor.ActorSystem;
-import akka.stream.Materializer;
+import org.apache.pekko.actor.ActorSystem;
+import org.apache.pekko.stream.Materializer;
 import controllers.Assets;
 import controllers.AssetsConfiguration;
 import controllers.DefaultAssetsMetadata;
@@ -119,7 +120,6 @@ import play.mvc.FileMimeTypes;
 import play.routing.Router;
 import scala.Option;
 import scala.collection.JavaConverters;
-import scala.compat.java8.OptionConverters;
 import scala.concurrent.ExecutionContext;
 import scala.concurrent.ExecutionContextExecutor;
 import scala.concurrent.Future;
@@ -370,7 +370,8 @@ public class CdiLoader implements ApplicationLoader, Consumer<Collection<Applica
                 addBean(event, injector::asScala, play.api.inject.Injector.class);
                 addBean(event, () -> context.asScala().webCommands(), WebCommands.class);
                 addBean(event,
-                        new LazyProvider<>(() -> new OptionalSourceMapper(OptionConverters.toScala(context.sourceMapper()))),
+                        new LazyProvider<>(() -> new OptionalSourceMapper(context.sourceMapper()
+                                .map(Option::apply).orElse(Option.empty()))),
                         OptionalSourceMapper.class);
                 event.addBean().id("playx.cdi.beans.builtin.applications").beanClass(null)
                      .types(new TypeLiteral<Collection<Application>>(){}.getType(), Object.class)
@@ -595,6 +596,11 @@ public class CdiLoader implements ApplicationLoader, Consumer<Collection<Applica
         }
 
         @Override
+        public CoordinatedShutdown coordinatedShutdown() {
+            return java.injector.instanceOf(CoordinatedShutdown.class);
+        }
+
+        @Override
         public RequestFactory requestFactory() {
             return java.injector.instanceOf(RequestFactory.class);
         }
@@ -671,26 +677,6 @@ public class CdiLoader implements ApplicationLoader, Consumer<Collection<Applica
         }
 
         @Override
-        public File getFile(final String relativePath) {
-            return java.context.environment().getFile(relativePath);
-        }
-
-        @Override
-        public Option<File> getExistingFile(final String relativePath) {
-            return java.context.environment().asScala().getExistingFile(relativePath);
-        }
-
-        @Override
-        public Option<URL> resource(final String name) {
-            return java.context.environment().asScala().resource(name);
-        }
-
-        @Override
-        public Option<InputStream> resourceAsStream(final String name) {
-            return java.context.environment().asScala().resourceAsStream(name);
-        }
-
-        @Override
         public play.api.inject.Injector injector() {
             return java.injector.asScala();
         }
@@ -718,6 +704,11 @@ public class CdiLoader implements ApplicationLoader, Consumer<Collection<Applica
         @Override
         public play.api.Application asScala() {
             return scala;
+        }
+
+        @Override
+        public play.Environment environment() {
+            return context.environment();
         }
 
         @Override

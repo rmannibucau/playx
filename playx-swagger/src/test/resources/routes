@@ -1,2 +1,0 @@
-# set up swagger integration itself
-GET     /swagger.json           controllers.ApiHelpController.getResources

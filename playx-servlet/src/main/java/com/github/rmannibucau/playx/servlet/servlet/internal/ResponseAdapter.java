@@ -20,7 +20,7 @@ import javax.servlet.ServletOutputStream;
 import javax.servlet.http.Cookie;
 import javax.servlet.http.HttpServletResponse;
 
-import akka.util.ByteString;
+import org.apache.pekko.util.ByteString;
 import play.http.HttpEntity;
 import play.mvc.Result;
 

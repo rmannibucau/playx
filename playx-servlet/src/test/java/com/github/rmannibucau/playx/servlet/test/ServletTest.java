@@ -56,13 +56,13 @@ public class ServletTest {
 
     @Test
     public void requestWithQuery() {
-        doTest("/request?foo=bar", "uri=/request\nurl=http://localhost:" + server.port() + "/request\ncontext=\n"
+        doTest("/request?foo=bar", "uri=/request\nurl=http://localhost:" + server.getRunningHttpPort().orElseThrow() + "/request\ncontext=\n"
                 + "servlet=/request\npathinfo=\nquery=foo=bar");
     }
 
     @Test
     public void request() {
-        doTest("/request", "uri=/request\nurl=http://localhost:" + server.port() + "/request\ncontext=\n"
+        doTest("/request", "uri=/request\nurl=http://localhost:" + server.getRunningHttpPort().orElseThrow() + "/request\ncontext=\n"
                 + "servlet=/request\npathinfo=\nquery=");
     }
 
@@ -88,7 +88,7 @@ public class ServletTest {
 
     private void doTest(final String endpoint, final String expected) {
         try {
-            final URL url = new URL(String.format("http://localhost:%d%s", server.port(), endpoint));
+            final URL url = new URL(String.format("http://localhost:%d%s", server.getRunningHttpPort().orElseThrow(), endpoint));
             try (final BufferedReader stream = new BufferedReader(new InputStreamReader(url.openStream()))) {
                 final String output = stream.lines().collect(joining("\n"));
                 assertEquals(expected, output);

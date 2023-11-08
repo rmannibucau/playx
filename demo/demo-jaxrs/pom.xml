@@ -91,18 +91,18 @@
 
     <!-- finally Play! -->
     <dependency>
-      <groupId>com.typesafe.play</groupId>
+      <groupId>org.playframework</groupId>
       <artifactId>play_${scala.version}</artifactId>
       <version>${play.version}</version>
     </dependency>
     <dependency>
-      <groupId>com.typesafe.play</groupId>
+      <groupId>org.playframework</groupId>
       <artifactId>play-server_${scala.version}</artifactId>
       <version>${play.version}</version>
     </dependency>
     <dependency>
-      <groupId>com.typesafe.play</groupId>
-      <artifactId>play-akka-http-server_${scala.version}</artifactId>
+      <groupId>org.playframework</groupId>
+      <artifactId>play-pekko-http-server_${scala.version}</artifactId>
       <version>${play.version}</version>
     </dependency>
 

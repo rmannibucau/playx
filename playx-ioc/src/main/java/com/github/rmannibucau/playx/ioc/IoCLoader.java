@@ -20,8 +20,9 @@ import java.util.function.Consumer;
 
 import com.typesafe.config.Config;
 
-import akka.actor.ActorSystem;
-import akka.stream.Materializer;
+import org.apache.pekko.actor.ActorSystem;
+import org.apache.pekko.actor.CoordinatedShutdown;
+import org.apache.pekko.stream.Materializer;
 import play.Application;
 import play.ApplicationLoader;
 import play.DefaultApplication;
@@ -172,6 +173,11 @@ public class IoCLoader implements ApplicationLoader {
         }
 
         @Override
+        public CoordinatedShutdown coordinatedShutdown() {
+            return scalaRef.coordinatedShutdown();
+        }
+
+        @Override
         public RequestFactory requestFactory() {
             return scalaRef.requestFactory();
         }
@@ -189,26 +195,6 @@ public class IoCLoader implements ApplicationLoader {
         @Override
         public Application asJava() {
             return java;
-        }
-
-        @Override
-        public File getFile(final String relativePath) {
-            return scalaRef.getFile(relativePath);
-        }
-
-        @Override
-        public Option<File> getExistingFile(final String relativePath) {
-            return scalaRef.getExistingFile(relativePath);
-        }
-
-        @Override
-        public Option<URL> resource(final String name) {
-            return scalaRef.resource(name);
-        }
-
-        @Override
-        public Option<InputStream> resourceAsStream(final String name) {
-            return scalaRef.resourceAsStream(name);
         }
 
         @Override

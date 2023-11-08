@@ -302,6 +302,9 @@ private String url;
 
 == Swagger Integration
 
+WARNING: Swagger integration is supported up to playx version 0.0.14.
+The module is entirely removed after version 0.0.14 due to lack of support on swagger play project which it depends on.
+
 [source,xml]
 ----
 <dependency>
