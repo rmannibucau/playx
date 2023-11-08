@@ -23,7 +23,6 @@
     <module>playx-cdi</module>
     <module>demo</module>
     <module>playx-microprofile-config</module>
-    <module>playx-swagger</module>
   </modules>
 
   <dependencyManagement>
