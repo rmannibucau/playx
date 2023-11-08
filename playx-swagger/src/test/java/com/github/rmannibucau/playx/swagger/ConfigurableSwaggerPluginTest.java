@@ -49,7 +49,7 @@ public class ConfigurableSwaggerPluginTest {
                     }));
             final GuiceableModule swaggerModule = GuiceableModule$.MODULE$.fromPlayModule(new ConfigurableSwaggerModule());
             application = new GuiceApplicationBuilder().router(Router$.MODULE$.empty()).configure(classes)
-                    .bindings(JavaConverters.asScalaBuffer(singletonList(swaggerModule)).toSeq()).build().asJava();
+                    .bindings(JavaConverters.asScalaSet(singletonList(swaggerModule))).build().asJava();
             final AtomicReference<Throwable> error = new AtomicReference<>();
             try {
                 running(application, () -> {

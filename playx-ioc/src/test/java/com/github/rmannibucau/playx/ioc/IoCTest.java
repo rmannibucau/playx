@@ -116,6 +116,11 @@ public class IoCTest {
                 }
 
                 @Override
+                public Environment environment() {
+                    return null;
+                }
+
+                @Override
                 public Config config() {
                     return null;
                 }
