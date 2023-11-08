@@ -120,7 +120,6 @@ import play.mvc.FileMimeTypes;
 import play.routing.Router;
 import scala.Option;
 import scala.collection.JavaConverters;
-import scala.compat.java8.OptionConverters;
 import scala.concurrent.ExecutionContext;
 import scala.concurrent.ExecutionContextExecutor;
 import scala.concurrent.Future;
@@ -371,7 +370,8 @@ public class CdiLoader implements ApplicationLoader, Consumer<Collection<Applica
                 addBean(event, injector::asScala, play.api.inject.Injector.class);
                 addBean(event, () -> context.asScala().webCommands(), WebCommands.class);
                 addBean(event,
-                        new LazyProvider<>(() -> new OptionalSourceMapper(OptionConverters.toScala(context.sourceMapper()))),
+                        new LazyProvider<>(() -> new OptionalSourceMapper(context.sourceMapper()
+                                .map(Option::apply).orElse(Option.empty()))),
                         OptionalSourceMapper.class);
                 event.addBean().id("playx.cdi.beans.builtin.applications").beanClass(null)
                      .types(new TypeLiteral<Collection<Application>>(){}.getType(), Object.class)

@@ -3,7 +3,6 @@ package com.github.rmannibucau.playx.demo.jaxrs;
 import static java.util.Collections.singletonMap;
 
 import java.util.Locale;
-import java.util.OptionalInt;
 import java.util.logging.Logger;
 
 import org.apache.cxf.common.logging.Slf4jLogger;
@@ -19,7 +18,6 @@ import play.core.server.ServerConfig;
 import play.core.server.ServerProvider;
 import play.core.server.ServerProvider$;
 import scala.Option;
-import scala.compat.java8.OptionConverters;
 
 // not for prod but nice in the IDE
 public final class Launch {
@@ -41,7 +39,7 @@ public final class Launch {
 
         // launch the server
         final ServerConfig serverConfig = ServerConfig.apply(application.classloader(), application.path(),
-                OptionConverters.toScala(OptionalInt.of(Integer.getInteger("port", 8080))), Option.empty(), "0.0.0.0",
+                Option.apply(Integer.getInteger("port", 8080)), Option.empty(), "0.0.0.0",
                 Mode.TEST.asScala(), System.getProperties());
         final ServerProvider serverProvider = ServerProvider$.MODULE$.fromConfiguration(application.classloader(),
                 application.asScala().configuration());
