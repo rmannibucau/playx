@@ -57,8 +57,8 @@ import com.typesafe.config.Config;
 import com.typesafe.config.ConfigObject;
 import com.typesafe.config.ConfigValueType;
 
-import akka.actor.ActorSystem;
-import akka.stream.Materializer;
+import org.apache.pekko.actor.ActorSystem;
+import org.apache.pekko.stream.Materializer;
 import controllers.Assets;
 import controllers.AssetsConfiguration;
 import controllers.DefaultAssetsMetadata;

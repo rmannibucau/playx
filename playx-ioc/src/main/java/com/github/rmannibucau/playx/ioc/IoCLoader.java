@@ -20,8 +20,8 @@ import java.util.function.Consumer;
 
 import com.typesafe.config.Config;
 
-import akka.actor.ActorSystem;
-import akka.stream.Materializer;
+import org.apache.pekko.actor.ActorSystem;
+import org.apache.pekko.stream.Materializer;
 import play.Application;
 import play.ApplicationLoader;
 import play.DefaultApplication;

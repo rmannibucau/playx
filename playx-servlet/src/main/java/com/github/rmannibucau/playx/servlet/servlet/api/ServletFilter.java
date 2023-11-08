@@ -1,6 +1,6 @@
 package com.github.rmannibucau.playx.servlet.servlet.api;
 
-import akka.util.ByteString;
+import org.apache.pekko.util.ByteString;
 import play.http.HttpErrorHandler;
 import play.inject.Injector;
 import play.libs.streams.Accumulator;
